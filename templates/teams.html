@@ -325,6 +325,10 @@
         .logo-input.unsaved { border-color: #555522; background: rgba(80,80,10,0.15); }
         .logo-input.saved   { border-color: #1a4422; }
 
+        /* per-team media filename inputs */
+        .media-input { width: 120px; }
+        .media-input::placeholder { color: var(--text-muted); }
+
         /* stat cells */
         .stat { text-align: right; }
         .stat-header { text-align: right; }
@@ -400,6 +404,10 @@
                     <th class="stat-header" data-col="avg_teleop_score">Avg Teleop <span class="sort-arrow">↕</span></th>
                     <th class="stat-header" data-col="avg_match_score">Avg Score <span class="sort-arrow">↕</span></th>
                     <th class="stat-header" data-col="event_wlt">Event W-L-T <span class="sort-arrow">↕</span></th>
+                    <th title="Robot image filename">Robot Image</th>
+                    <th title="Drive team image filename">Drive Team Img</th>
+                    <th title="Drive team video filename">Drive Team Vid</th>
+                    <th title="Team logo image filename">Logo Image</th>
                 </tr>
             </thead>
             <tbody id="teamBody"></tbody>
@@ -413,6 +421,9 @@
     let sortAsc = true;
     let searchVal = '';
     let saveTimer = null;
+
+    // Media asset base dirs + extensions (from server). Keys map to <asset>_file fields.
+    const mediaAssets = {{ media_assets | tojson }};
 
     // ── FETCH & RENDER ──
     function fetchTeams() {
@@ -445,7 +456,7 @@
 
         const tbody = document.getElementById('teamBody');
         if (!keys.length) {
-            tbody.innerHTML = `<tr><td colspan="9" class="empty-msg">No teams found</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="14" class="empty-msg">No teams found</td></tr>`;
             return;
         }
 
@@ -520,6 +531,10 @@
                         data-key="${k}" data-field="event_wlt"
                         data-original="${esc(t.event_wlt || '0-0-0')}">
                 </td>
+                ${mediaCell(k, t, 'robot_image')}
+                ${mediaCell(k, t, 'driveteam_image')}
+                ${mediaCell(k, t, 'driveteam_video')}
+                ${mediaCell(k, t, 'teamlogo_image')}
             </tr>`;
         }).join('');
 
@@ -640,6 +655,25 @@
     // ── UTILS ──
     function esc(s) {
         return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // Build a media filename cell. Stored value is just the filename; empty shows
+    // the default (<team#><ext>) as placeholder, and the tooltip shows the full path.
+    function mediaCell(k, t, asset) {
+        const cfg = mediaAssets[asset] || { dir: '', ext: '' };
+        const field = asset + '_file';
+        const stored = t[field] || '';
+        const defName = `${t.team_number}${cfg.ext}`;
+        const fullPath = `${cfg.dir}/${stored || defName}`;
+        return `<td>
+            <input class="logo-input media-input" type="text"
+                value="${esc(stored)}"
+                placeholder="${esc(defName)}"
+                title="${esc(fullPath)}"
+                data-key="${k}"
+                data-field="${field}"
+                data-original="${esc(stored)}">
+        </td>`;
     }
 
     // ── INIT ──

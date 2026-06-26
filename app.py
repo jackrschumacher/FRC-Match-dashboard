@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import requests
 from datetime import datetime
 from flask import Flask, render_template, jsonify, request
@@ -74,19 +75,40 @@ def fetch_statbotics_epa(team_key, year):
     """
     Fetch EPA from Statbotics v3 API.
     Falls back to prior years if current year has no data yet.
+
+    Uses a generous read timeout and retries transient failures (timeouts /
+    connection blips) a couple of times before giving up, since Statbotics can
+    be slow and event-day networks are flaky.
     """
     team_num = team_key.replace("frc", "")
+    # (connect timeout, read timeout) — Statbotics often responds slowly.
+    timeouts = (5, 20)
+    max_attempts = 3
+
     for check_year in [year, str(int(year) - 1), str(int(year) - 2)]:
         url = f"https://api.statbotics.io/v3/team_year/{team_num}/{check_year}"
-        try:
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                if data:
-                    return data
-        except requests.exceptions.RequestException as e:
-            add_log(f"Statbotics error for {team_num}/{check_year}: {e}")
-            continue
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = requests.get(url, timeout=timeouts)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data:
+                        return data
+                # Valid response, just no data for this year — try the prior year.
+                break
+            except (requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError) as e:
+                # Transient — retry the same year with a short backoff.
+                if attempt < max_attempts:
+                    add_log(f"Statbotics timeout for {team_num}/{check_year} "
+                            f"(attempt {attempt}/{max_attempts}) — retrying…")
+                    time.sleep(1.5 * attempt)
+                    continue
+                add_log(f"Statbotics gave up on {team_num}/{check_year} "
+                        f"after {max_attempts} attempts: {e}")
+            except requests.exceptions.RequestException as e:
+                add_log(f"Statbotics error for {team_num}/{check_year}: {e}")
+                break
     return {}
 
 def sync_event_data(event_key):
@@ -324,12 +346,51 @@ def format_match_name(match):
         return f"Finals Match {match_num}"
     return f"{level.upper()}{set_num}-{match_num}"
 
+def get_match_type_number(match):
+    """Split a match into a type label and its number, for the graphics feed.
+    Returns (match_type, match_number) e.g. ("Qualification", "1")."""
+    level = match.get("comp_level", "")
+    set_num = match.get("set_number", 1)
+    match_num = match.get("match_number", 1)
+    if level == "qm":
+        return "Qualification", str(match_num)
+    elif level == "sf":
+        # Modern double-elimination: each "set" is one playoff match (SF1…SF13).
+        return "Playoff", str(set_num)
+    elif level == "f":
+        return "Final", str(match_num)
+    return level.upper(), str(match_num)
+
 # --- LOGO HELPER ---
 
 def get_logo(team_key, teams_data):
     """Return logo filename if the team has a logo and logo_enabled is True (default)."""
     t = teams_data.get(team_key, {})
     return t.get("logo", "") if t.get("logo_enabled", True) else ""
+
+# --- TEAM MEDIA ASSETS ---
+# Per-team AV files used by the graphics. Each team stores only a FILENAME for
+# each asset (editable in Team Setup); the active-match feed joins it onto the
+# base directory below to produce the full path. Edit these base dirs once per
+# event (e.g. swap "2026MROC" for the next event code).
+MEDIA_ASSETS = {
+    "robot_image":     {"dir": "C:/FRC AV Resources/2026MROC/robot_images",     "ext": ".jpg"},
+    "driveteam_image": {"dir": "C:/FRC AV Resources/2026MROC/driveteam_images", "ext": ".jpg"},
+    "driveteam_video": {"dir": "C:/FRC AV Resources/2026MROC/driveteam_videos", "ext": ".avi"},
+    "teamlogo_image":  {"dir": "C:/FRC AV Resources/2026MROC/teamlogo_images",  "ext": ".jpg"},
+}
+
+def media_filename(team_key, teams_data, asset):
+    """The stored filename for an asset, defaulting to <team_number><ext>."""
+    t = teams_data.get(team_key, {})
+    num = t.get("team_number") or team_key.replace("frc", "")
+    stored = (t.get(f"{asset}_file") or "").strip()
+    return stored or f"{num}{MEDIA_ASSETS[asset]['ext']}"
+
+def media_path(team_key, teams_data, asset):
+    """Full path = base dir + filename, for the active-match graphics feed."""
+    fname = media_filename(team_key, teams_data, asset)
+    return MEDIA_ASSETS[asset]["dir"] + "/" + fname if fname else ""
 
 # --- CORE API ROUTES ---
 
@@ -343,7 +404,9 @@ def control_panel():
 @app.route("/teams")
 def team_setup():
     teams_data = load_teams()
-    return render_template("teams.html", teams=teams_data)
+    # Expose media base dirs + extensions so the page can show path hints and defaults.
+    media_cfg = {a: {"dir": cfg["dir"], "ext": cfg["ext"]} for a, cfg in MEDIA_ASSETS.items()}
+    return render_template("teams.html", teams=teams_data, media_assets=media_cfg)
 
 @app.route("/api/teams")
 def api_teams():
@@ -447,6 +510,24 @@ def set_active_match():
     add_log(f"ERROR: Invalid match key attempted: {match_key}")
     return jsonify({"status": "error", "message": "Invalid match key"}), 400
 
+@app.route("/api/advance_match", methods=["POST"])
+def advance_match():
+    """Advance to the next match without recording a result for the current one."""
+    matches_data = load_matches()
+    current_key = matches_data.get("current_match")
+
+    if not current_key or current_key not in matches_data.get("event_matches", {}):
+        return jsonify({"status": "error", "message": "No active match set"}), 400
+
+    next_key = find_next_match(matches_data, current_key)
+    if not next_key:
+        return jsonify({"status": "error", "message": "No next match — this is the last one"}), 400
+
+    matches_data["current_match"] = next_key
+    save_matches(matches_data)
+    add_log(f"Advanced to next match (no result): {next_key}")
+    return jsonify({"status": "success", "next_match": next_key})
+
 # --- API ENDPOINTS ---
 
 # Endpoint for the active match
@@ -470,8 +551,11 @@ def api_active_match():
     red_keys = match["alliances"]["red"]["team_keys"]
     blue_keys = match["alliances"]["blue"]["team_keys"]
 
+    match_type, match_number = get_match_type_number(match)
+
     output = {
-        "match_name": format_match_name(match),
+        "match_type": match_type,
+        "match_number": match_number,
 
         "red_1": red_keys[0].replace("frc", ""),
         "red_1_name": get_team_name(red_keys[0]),
@@ -505,6 +589,12 @@ def api_active_match():
     output["red_total_epa"] = round(output["red_1_epa"] + output["red_2_epa"] + output["red_3_epa"], 1)
     output["blue_total_epa"] = round(output["blue_1_epa"] + output["blue_2_epa"] + output["blue_3_epa"], 1)
 
+    # Per-position media asset full paths: red_1_robot_image, blue_2_driveteam_video, etc.
+    for color, keys in (("red", red_keys), ("blue", blue_keys)):
+        for i, tk in enumerate(keys, start=1):
+            for asset in MEDIA_ASSETS:
+                output[f"{color}_{i}_{asset}"] = media_path(tk, teams_data, asset)
+
     return jsonify(output)
 
 @app.route("/api/team_profile/<team_number>.json")
@@ -520,36 +610,86 @@ def api_team_profile(team_number):
     result["logo_display"] = get_logo(team_key, teams_data)
     return jsonify(result)
 
-@app.route("/api/h2h/<team_a_number>/<team_b_number>.json")
-def api_h2h(team_a_number, team_b_number):
-    team_a_key = f"frc{team_a_number}"
-    team_b_key = f"frc{team_b_number}"
-    
-    teams_data = load_teams()
-    
+def build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats):
+    """Assemble the head-to-head feed: live team profile fields + media paths,
+    combined with the (precomputed) head-to-head win/loss records."""
     profile_a = teams_data.get(team_a_key, {})
     profile_b = teams_data.get(team_b_key, {})
-    
-    h2h_stats = calculate_h2h(team_a_key, team_b_key)
-    
+
     output = {
-        "team_a_number": team_a_number,
+        "team_a_number": team_a_key.replace("frc", ""),
         "team_a_name": profile_a.get("team_name", ""),
         "team_a_logo": get_logo(team_a_key, teams_data),
         "team_a_event_wlt": profile_a.get("event_wlt", ""),
         "team_a_epa": profile_a.get("epa", ""),
 
-        "team_b_number": team_b_number,
+        "team_b_number": team_b_key.replace("frc", ""),
         "team_b_name": profile_b.get("team_name", ""),
         "team_b_logo": get_logo(team_b_key, teams_data),
         "team_b_event_wlt": profile_b.get("event_wlt", ""),
         "team_b_epa": profile_b.get("epa", ""),
 
-        "h2h_2026": h2h_stats["h2h_2026"],
-        "h2h_since_2022": h2h_stats["h2h_since_2022"]
+        "h2h_2026": h2h_stats.get("h2h_2026", ""),
+        "h2h_since_2022": h2h_stats.get("h2h_since_2022", ""),
     }
-    
-    return jsonify(output)
+
+    # Per-team media asset full paths: team_a_robot_image, team_b_teamlogo_image, etc.
+    for label, key in (("team_a", team_a_key), ("team_b", team_b_key)):
+        for asset in MEDIA_ASSETS:
+            output[f"{label}_{asset}"] = media_path(key, teams_data, asset)
+
+    return output
+
+@app.route("/api/h2h/<team_a_number>/<team_b_number>.json")
+def api_h2h(team_a_number, team_b_number):
+    team_a_key = f"frc{team_a_number}"
+    team_b_key = f"frc{team_b_number}"
+    teams_data = load_teams()
+    h2h_stats = calculate_h2h(team_a_key, team_b_key)
+    return jsonify(build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats))
+
+@app.route("/api/h2h.json")
+def api_h2h_current():
+    """Serve the currently-selected head-to-head matchup (set from the control UI)."""
+    matches_data = load_matches()
+    h2h = matches_data.get("h2h") or {}
+    team_a_key = h2h.get("team_a")
+    team_b_key = h2h.get("team_b")
+    if not team_a_key or not team_b_key:
+        return jsonify({"error": "No head-to-head matchup selected"})
+    teams_data = load_teams()
+    return jsonify(build_h2h_output(team_a_key, team_b_key, teams_data, h2h))
+
+@app.route("/api/set_h2h", methods=["POST"])
+def api_set_h2h():
+    """Select the two teams for the head-to-head feed. Computes and stores the
+    win/loss record now so /api/h2h.json stays cheap to poll."""
+    payload = request.get_json(silent=True) or {}
+    a = str(payload.get("team_a", "")).replace("frc", "").strip()
+    b = str(payload.get("team_b", "")).replace("frc", "").strip()
+    if not a or not b:
+        return jsonify({"status": "error", "message": "Select two teams."}), 400
+    if a == b:
+        return jsonify({"status": "error", "message": "Pick two different teams."}), 400
+
+    team_a_key = f"frc{a}"
+    team_b_key = f"frc{b}"
+    teams_data = load_teams()
+
+    add_log(f"Computing head-to-head: {a} vs {b}…")
+    h2h_stats = calculate_h2h(team_a_key, team_b_key)
+
+    matches_data = load_matches()
+    matches_data["h2h"] = {
+        "team_a": team_a_key,
+        "team_b": team_b_key,
+        "h2h_2026": h2h_stats["h2h_2026"],
+        "h2h_since_2022": h2h_stats["h2h_since_2022"],
+    }
+    save_matches(matches_data)
+    add_log(f"Head-to-head set: {a} vs {b}")
+
+    return jsonify({"status": "success", **build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats)})
 
 # --- QUICK SYNC & IMPORT ---
 
@@ -823,7 +963,8 @@ def api_edit_team():
     teams_data = load_teams()
     if team_key not in teams_data:
         return jsonify({"status": "error", "message": "Team not found"}), 404
-    allowed = {"team_name", "logo", "logo_enabled", "notes", "epa", "avg_auto_score", "avg_teleop_score", "avg_match_score", "season_wlt", "event_wlt"}
+    allowed = {"team_name", "logo", "logo_enabled", "notes", "epa", "avg_auto_score", "avg_teleop_score", "avg_match_score", "season_wlt", "event_wlt",
+               "robot_image_file", "driveteam_image_file", "driveteam_video_file", "teamlogo_image_file"}
     teams_data[team_key].update({k: v for k, v in updates.items() if k in allowed})
     save_teams(teams_data)
     add_log(f"Manual edit: updated {team_key}")
