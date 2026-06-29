@@ -380,6 +380,15 @@ MEDIA_ASSETS = {
     "teamlogo_image":  {"dir": "C:/FRC AV Resources/2026MROC/teamlogo_images",  "ext": ".jpg"},
 }
 
+# Abbreviated key suffix for each media asset in the active-match feed, so the
+# emitted field names stay under 15 chars (e.g. r1_robot_img, b2_dt_vid, r3_logo).
+MEDIA_KEY_ABBR = {
+    "robot_image":     "robot_img",
+    "driveteam_image": "dt_img",
+    "driveteam_video": "dt_vid",
+    "teamlogo_image":  "logo",
+}
+
 def media_filename(team_key, teams_data, asset):
     """The stored filename for an asset, defaulting to <team_number><ext>."""
     t = teams_data.get(team_key, {})
@@ -548,6 +557,13 @@ def api_active_match():
     def get_team_name(team_key):
         return teams_data.get(team_key, {}).get("team_name", "")
 
+    def get_event_wlt(team_key):
+        return teams_data.get(team_key, {}).get("event_wlt", "0-0-0")
+
+    ranks = event_rank_map(teams_data)
+    def get_rank(team_key):
+        return ranks.get(team_key, 0)
+
     red_keys = match["alliances"]["red"]["team_keys"]
     blue_keys = match["alliances"]["blue"]["team_keys"]
 
@@ -557,43 +573,56 @@ def api_active_match():
         "match_type": match_type,
         "match_number": match_number,
 
-        "red_1": red_keys[0].replace("frc", ""),
-        "red_1_name": get_team_name(red_keys[0]),
-        "red_1_logo": get_logo(red_keys[0], teams_data),
-        "red_1_epa": get_epa(red_keys[0]),
-        "red_2": red_keys[1].replace("frc", ""),
-        "red_2_name": get_team_name(red_keys[1]),
-        "red_2_logo": get_logo(red_keys[1], teams_data),
-        "red_2_epa": get_epa(red_keys[1]),
-        "red_3": red_keys[2].replace("frc", ""),
-        "red_3_name": get_team_name(red_keys[2]),
-        "red_3_logo": get_logo(red_keys[2], teams_data),
-        "red_3_epa": get_epa(red_keys[2]),
+        "r1": red_keys[0].replace("frc", ""),
+        "r1_name": get_team_name(red_keys[0]),
+        "r1_logo_file": get_logo(red_keys[0], teams_data),
+        "r1_epa": get_epa(red_keys[0]),
+        "r1_event_wlt": get_event_wlt(red_keys[0]),
+        "r1_rank": get_rank(red_keys[0]),
+        "r2": red_keys[1].replace("frc", ""),
+        "r2_name": get_team_name(red_keys[1]),
+        "r2_logo_file": get_logo(red_keys[1], teams_data),
+        "r2_epa": get_epa(red_keys[1]),
+        "r2_event_wlt": get_event_wlt(red_keys[1]),
+        "r2_rank": get_rank(red_keys[1]),
+        "r3": red_keys[2].replace("frc", ""),
+        "r3_name": get_team_name(red_keys[2]),
+        "r3_logo_file": get_logo(red_keys[2], teams_data),
+        "r3_epa": get_epa(red_keys[2]),
+        "r3_event_wlt": get_event_wlt(red_keys[2]),
+        "r3_rank": get_rank(red_keys[2]),
         "red_score": match["alliances"]["red"].get("score", 0),
 
-        "blue_1": blue_keys[0].replace("frc", ""),
-        "blue_1_name": get_team_name(blue_keys[0]),
-        "blue_1_logo": get_logo(blue_keys[0], teams_data),
-        "blue_1_epa": get_epa(blue_keys[0]),
-        "blue_2": blue_keys[1].replace("frc", ""),
-        "blue_2_name": get_team_name(blue_keys[1]),
-        "blue_2_logo": get_logo(blue_keys[1], teams_data),
-        "blue_2_epa": get_epa(blue_keys[1]),
-        "blue_3": blue_keys[2].replace("frc", ""),
-        "blue_3_name": get_team_name(blue_keys[2]),
-        "blue_3_logo": get_logo(blue_keys[2], teams_data),
-        "blue_3_epa": get_epa(blue_keys[2]),
+        "b1": blue_keys[0].replace("frc", ""),
+        "b1_name": get_team_name(blue_keys[0]),
+        "b1_logo_file": get_logo(blue_keys[0], teams_data),
+        "b1_epa": get_epa(blue_keys[0]),
+        "b1_event_wlt": get_event_wlt(blue_keys[0]),
+        "b1_rank": get_rank(blue_keys[0]),
+        "b2": blue_keys[1].replace("frc", ""),
+        "b2_name": get_team_name(blue_keys[1]),
+        "b2_logo_file": get_logo(blue_keys[1], teams_data),
+        "b2_epa": get_epa(blue_keys[1]),
+        "b2_event_wlt": get_event_wlt(blue_keys[1]),
+        "b2_rank": get_rank(blue_keys[1]),
+        "b3": blue_keys[2].replace("frc", ""),
+        "b3_name": get_team_name(blue_keys[2]),
+        "b3_logo_file": get_logo(blue_keys[2], teams_data),
+        "b3_epa": get_epa(blue_keys[2]),
+        "b3_event_wlt": get_event_wlt(blue_keys[2]),
+        "b3_rank": get_rank(blue_keys[2]),
         "blue_score": match["alliances"]["blue"].get("score", 0),
     }
-    
-    output["red_total_epa"] = round(output["red_1_epa"] + output["red_2_epa"] + output["red_3_epa"], 1)
-    output["blue_total_epa"] = round(output["blue_1_epa"] + output["blue_2_epa"] + output["blue_3_epa"], 1)
 
-    # Per-position media asset full paths: red_1_robot_image, blue_2_driveteam_video, etc.
-    for color, keys in (("red", red_keys), ("blue", blue_keys)):
+    output["red_total_epa"] = round(output["r1_epa"] + output["r2_epa"] + output["r3_epa"], 1)
+    output["blue_total_epa"] = round(output["b1_epa"] + output["b2_epa"] + output["b3_epa"], 1)
+
+    # Per-position media asset full paths with abbreviated keys: r1_robot_img,
+    # b2_dt_vid, r3_logo, etc. (see MEDIA_KEY_ABBR for the suffix mapping).
+    for prefix, keys in (("r", red_keys), ("b", blue_keys)):
         for i, tk in enumerate(keys, start=1):
             for asset in MEDIA_ASSETS:
-                output[f"{color}_{i}_{asset}"] = media_path(tk, teams_data, asset)
+                output[f"{prefix}{i}_{MEDIA_KEY_ABBR[asset]}"] = media_path(tk, teams_data, asset)
 
     return jsonify(output)
 
@@ -988,19 +1017,26 @@ def api_edit_match_roster():
     add_log(f"Manual edit: updated roster for {match_key}")
     return jsonify({"status": "success"})
 
-@app.route("/api/rankings.json")
-def api_rankings():
-    teams_data = load_teams()
-
+def event_ranked_teams(teams_data):
+    """Teams as (team_key, team) sorted by event record:
+    most wins → fewest losses → most ties."""
     def sort_key(item):
         wlt = item[1].get("event_wlt", "0-0-0")
         try:
             w, l, t = [int(x) for x in wlt.split("-")]
-        except ValueError:
+        except (ValueError, AttributeError):
             w, l, t = 0, 0, 0
-        return (w, -l, t)   # most wins → fewest losses → most ties
+        return (w, -l, t)
+    return sorted(teams_data.items(), key=sort_key, reverse=True)
 
-    ranked = sorted(teams_data.items(), key=sort_key, reverse=True)
+def event_rank_map(teams_data):
+    """Map team_key -> current event rank (1-based)."""
+    return {tk: rank for rank, (tk, _) in enumerate(event_ranked_teams(teams_data), 1)}
+
+@app.route("/api/rankings.json")
+def api_rankings():
+    teams_data = load_teams()
+    ranked = event_ranked_teams(teams_data)
 
     return jsonify([
         {

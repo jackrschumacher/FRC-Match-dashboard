@@ -951,6 +951,16 @@
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .alliance-team-rank {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--text-muted);
+            margin-left: auto;
+            padding-left: 8px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
         .no-content-msg {
             font-family: 'IBM Plex Mono', monospace;
             font-size: 12px;
@@ -2100,6 +2110,11 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
         }
 
         // ── ACTIVE MATCH DISPLAY ──
+        // Rank of 0 / missing means the team isn't ranked yet (no results played).
+        function rankLabel(rank) {
+            return rank ? `Rank #${rank}` : 'Unranked';
+        }
+
         function renderActiveMatch() {
             fetch('/api/active_match.json')
                 .then(r => r.json())
@@ -2114,15 +2129,15 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
                         <div class="match-alliances">
                             <div class="alliance-block red">
                                 <div class="alliance-block-label">Red Alliance</div>
-                                <div class="alliance-team"><span class="alliance-team-num">${data.red_1}</span><span class="alliance-team-name">${escHtml(data.red_1_name || '')}</span></div>
-                                <div class="alliance-team"><span class="alliance-team-num">${data.red_2}</span><span class="alliance-team-name">${escHtml(data.red_2_name || '')}</span></div>
-                                <div class="alliance-team"><span class="alliance-team-num">${data.red_3}</span><span class="alliance-team-name">${escHtml(data.red_3_name || '')}</span></div>
+                                <div class="alliance-team"><span class="alliance-team-num">${data.r1}</span><span class="alliance-team-name">${escHtml(data.r1_name || '')}</span><span class="alliance-team-rank">${rankLabel(data.r1_rank)}</span></div>
+                                <div class="alliance-team"><span class="alliance-team-num">${data.r2}</span><span class="alliance-team-name">${escHtml(data.r2_name || '')}</span><span class="alliance-team-rank">${rankLabel(data.r2_rank)}</span></div>
+                                <div class="alliance-team"><span class="alliance-team-num">${data.r3}</span><span class="alliance-team-name">${escHtml(data.r3_name || '')}</span><span class="alliance-team-rank">${rankLabel(data.r3_rank)}</span></div>
                             </div>
                             <div class="alliance-block blue">
                                 <div class="alliance-block-label">Blue Alliance</div>
-                                <div class="alliance-team"><span class="alliance-team-num">${data.blue_1}</span><span class="alliance-team-name">${escHtml(data.blue_1_name || '')}</span></div>
-                                <div class="alliance-team"><span class="alliance-team-num">${data.blue_2}</span><span class="alliance-team-name">${escHtml(data.blue_2_name || '')}</span></div>
-                                <div class="alliance-team"><span class="alliance-team-num">${data.blue_3}</span><span class="alliance-team-name">${escHtml(data.blue_3_name || '')}</span></div>
+                                <div class="alliance-team"><span class="alliance-team-num">${data.b1}</span><span class="alliance-team-name">${escHtml(data.b1_name || '')}</span><span class="alliance-team-rank">${rankLabel(data.b1_rank)}</span></div>
+                                <div class="alliance-team"><span class="alliance-team-num">${data.b2}</span><span class="alliance-team-name">${escHtml(data.b2_name || '')}</span><span class="alliance-team-rank">${rankLabel(data.b2_rank)}</span></div>
+                                <div class="alliance-team"><span class="alliance-team-num">${data.b3}</span><span class="alliance-team-name">${escHtml(data.b3_name || '')}</span><span class="alliance-team-rank">${rankLabel(data.b3_rank)}</span></div>
                             </div>
                         </div>`;
                 })
