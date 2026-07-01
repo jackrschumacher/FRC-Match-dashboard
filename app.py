@@ -111,6 +111,39 @@ def fetch_statbotics_epa(team_key, year):
                 break
     return {}
 
+def parse_statbotics(sb_data):
+    """Extract (epa, wins, losses, ties) from a Statbotics v3 team_year payload.
+
+    The epa block shape has drifted between API versions: `epa.total_points`
+    (and `epa.stats`) may be a dict like {"mean": ...} or a bare number, so we
+    tolerate both instead of assuming .get() is available.
+        epa.total_points.mean  <- primary mean EPA value
+        epa.stats.pre_champs    <- fallback end-of-season value
+        record.wins/losses/ties
+    """
+    epa_obj    = sb_data.get("epa") or {}
+    record_obj = sb_data.get("record") or {}
+
+    def scalar(v):
+        return v if isinstance(v, (int, float)) else None
+
+    total_points = epa_obj.get("total_points")
+    stats        = epa_obj.get("stats")
+
+    epa = None
+    if isinstance(total_points, dict):
+        epa = total_points.get("mean")
+    else:
+        epa = scalar(total_points)
+    if not epa and isinstance(stats, dict):
+        epa = stats.get("pre_champs")
+    epa = round(float(epa or 0.0), 1)
+
+    wins   = record_obj.get("wins",   0) or 0
+    losses = record_obj.get("losses", 0) or 0
+    ties   = record_obj.get("ties",   0) or 0
+    return epa, wins, losses, ties
+
 def sync_event_data(event_key):
     add_log(f"Starting sync for event: {event_key}")
     
@@ -178,20 +211,8 @@ def sync_event_data(event_key):
         
         sb_data = fetch_statbotics_epa(tk, year)
         
-        # v3 API actual structure:
-        #   epa.total_points.mean  <- the primary mean EPA value
-        #   epa.stats.pre_champs   <- fallback end-of-season value
-        #   record.wins/losses/ties
-        epa_obj    = sb_data.get("epa") or {}
-        record_obj = sb_data.get("record") or {}
+        epa, wins, losses, ties = parse_statbotics(sb_data)
 
-        total_points = epa_obj.get("total_points") or {}
-        stats        = epa_obj.get("stats") or {}
-        epa = total_points.get("mean") or stats.get("pre_champs") or 0.0
-        wins   = record_obj.get("wins",   0) or 0
-        losses = record_obj.get("losses", 0) or 0
-        ties   = record_obj.get("ties",   0) or 0
-        
         t_stats = team_stats[tk]
         count = t_stats["count"]
         if count > 0:
@@ -278,14 +299,7 @@ def sync_teams_from_roster(team_numbers, year):
         team_name = tba_team.get("nickname", f"Team {num}") if tba_team else f"Team {num}"
 
         sb_data = fetch_statbotics_epa(tk, str(year))
-        epa_obj    = sb_data.get("epa") or {}
-        record_obj = sb_data.get("record") or {}
-        total_pts  = epa_obj.get("total_points") or {}
-        stats      = epa_obj.get("stats") or {}
-        epa    = total_pts.get("mean") or stats.get("pre_champs") or 0.0
-        wins   = record_obj.get("wins",   0) or 0
-        losses = record_obj.get("losses", 0) or 0
-        ties   = record_obj.get("ties",   0) or 0
+        epa, wins, losses, ties = parse_statbotics(sb_data)
 
         existing = teams_data.get(tk, {})
         teams_data[tk] = {
@@ -1033,12 +1047,22 @@ def event_rank_map(teams_data):
     """Map team_key -> current event rank (1-based)."""
     return {tk: rank for rank, (tk, _) in enumerate(event_ranked_teams(teams_data), 1)}
 
+# Separator between entries in the one-line rankings ticker strings
+# (rank_full / rank_top4 / rank_xtop4). Adjust the spacing here to taste.
+RANKING_TICKER_SEP = "     |     "
+
 @app.route("/api/rankings.json")
 def api_rankings():
+    """Rankings graphics feed. Returns:
+      rankings   – per-team list (rank, team_number, name, logo, record, epa)
+      rank_full  – one-line '#<rank> - <team_number>' string of every team
+      rank_top4  – same, ranks 1-4 only
+      rank_xtop4 – same, ranks 5 and beyond
+    """
     teams_data = load_teams()
     ranked = event_ranked_teams(teams_data)
 
-    return jsonify([
+    rankings = [
         {
             "rank":        rank,
             "team_number": team["team_number"],
@@ -1048,7 +1072,16 @@ def api_rankings():
             "epa":         team.get("epa", 0.0),
         }
         for rank, (tk, team) in enumerate(ranked, 1)
-    ])
+    ]
+
+    entries = [f"#{r['rank']} - {r['team_number']}" for r in rankings]
+    sep = RANKING_TICKER_SEP
+    return jsonify({
+        "rankings":   rankings,
+        "rank_full":  sep.join(entries),
+        "rank_top4":  sep.join(entries[:4]),
+        "rank_xtop4": sep.join(entries[4:]),
+    })
 
 # --- STARTUP ROUTINE ---
 
