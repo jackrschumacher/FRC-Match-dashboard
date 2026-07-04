@@ -226,7 +226,7 @@ def sync_event_data(event_key):
             "team_number": team["team_number"],
             "team_name": team["nickname"],
             "season_wlt": f"{wins}-{losses}-{ties}",
-            "event_wlt": event_records.get(tk, "0-0-0"),
+            "wlt": event_records.get(tk, "0-0-0"),
             "epa": round(float(epa), 1),
             "avg_auto_score": round(avg_auto, 1),
             "avg_teleop_score": round(avg_teleop, 1),
@@ -309,7 +309,7 @@ def sync_teams_from_roster(team_numbers, year):
             "logo_enabled":     existing.get("logo_enabled", True),
             "notes":            existing.get("notes", ""),
             "season_wlt":       f"{wins}-{losses}-{ties}",
-            "event_wlt":        existing.get("event_wlt", "0-0-0"),
+            "wlt":        existing.get("wlt", "0-0-0"),
             "epa":              round(float(epa), 1),
             "avg_auto_score":   existing.get("avg_auto_score", 0.0),
             "avg_teleop_score": existing.get("avg_teleop_score", 0.0),
@@ -571,8 +571,8 @@ def api_active_match():
     def get_team_name(team_key):
         return teams_data.get(team_key, {}).get("team_name", "")
 
-    def get_event_wlt(team_key):
-        return teams_data.get(team_key, {}).get("event_wlt", "0-0-0")
+    def get_wlt(team_key):
+        return teams_data.get(team_key, {}).get("wlt", "0-0-0")
 
     ranks = event_rank_map(teams_data)
     def get_rank(team_key):
@@ -591,19 +591,19 @@ def api_active_match():
         "r1_name": get_team_name(red_keys[0]),
         "r1_logo_file": get_logo(red_keys[0], teams_data),
         "r1_epa": get_epa(red_keys[0]),
-        "r1_event_wlt": get_event_wlt(red_keys[0]),
+        "r1_wlt": get_wlt(red_keys[0]),
         "r1_rank": get_rank(red_keys[0]),
         "r2": red_keys[1].replace("frc", ""),
         "r2_name": get_team_name(red_keys[1]),
         "r2_logo_file": get_logo(red_keys[1], teams_data),
         "r2_epa": get_epa(red_keys[1]),
-        "r2_event_wlt": get_event_wlt(red_keys[1]),
+        "r2_wlt": get_wlt(red_keys[1]),
         "r2_rank": get_rank(red_keys[1]),
         "r3": red_keys[2].replace("frc", ""),
         "r3_name": get_team_name(red_keys[2]),
         "r3_logo_file": get_logo(red_keys[2], teams_data),
         "r3_epa": get_epa(red_keys[2]),
-        "r3_event_wlt": get_event_wlt(red_keys[2]),
+        "r3_wlt": get_wlt(red_keys[2]),
         "r3_rank": get_rank(red_keys[2]),
         "red_score": match["alliances"]["red"].get("score", 0),
 
@@ -611,19 +611,19 @@ def api_active_match():
         "b1_name": get_team_name(blue_keys[0]),
         "b1_logo_file": get_logo(blue_keys[0], teams_data),
         "b1_epa": get_epa(blue_keys[0]),
-        "b1_event_wlt": get_event_wlt(blue_keys[0]),
+        "b1_wlt": get_wlt(blue_keys[0]),
         "b1_rank": get_rank(blue_keys[0]),
         "b2": blue_keys[1].replace("frc", ""),
         "b2_name": get_team_name(blue_keys[1]),
         "b2_logo_file": get_logo(blue_keys[1], teams_data),
         "b2_epa": get_epa(blue_keys[1]),
-        "b2_event_wlt": get_event_wlt(blue_keys[1]),
+        "b2_wlt": get_wlt(blue_keys[1]),
         "b2_rank": get_rank(blue_keys[1]),
         "b3": blue_keys[2].replace("frc", ""),
         "b3_name": get_team_name(blue_keys[2]),
         "b3_logo_file": get_logo(blue_keys[2], teams_data),
         "b3_epa": get_epa(blue_keys[2]),
-        "b3_event_wlt": get_event_wlt(blue_keys[2]),
+        "b3_wlt": get_wlt(blue_keys[2]),
         "b3_rank": get_rank(blue_keys[2]),
         "blue_score": match["alliances"]["blue"].get("score", 0),
     }
@@ -663,13 +663,13 @@ def build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats):
         "team_a_number": team_a_key.replace("frc", ""),
         "team_a_name": profile_a.get("team_name", ""),
         "team_a_logo": get_logo(team_a_key, teams_data),
-        "team_a_event_wlt": profile_a.get("event_wlt", ""),
+        "team_a_wlt": profile_a.get("wlt", ""),
         "team_a_epa": profile_a.get("epa", ""),
 
         "team_b_number": team_b_key.replace("frc", ""),
         "team_b_name": profile_b.get("team_name", ""),
         "team_b_logo": get_logo(team_b_key, teams_data),
-        "team_b_event_wlt": profile_b.get("event_wlt", ""),
+        "team_b_wlt": profile_b.get("wlt", ""),
         "team_b_epa": profile_b.get("epa", ""),
 
         "h2h_2026": h2h_stats.get("h2h_2026", ""),
@@ -919,7 +919,7 @@ def api_sync_scores():
     teams_data = load_teams()
     for tk, rec in event_records.items():
         if tk in teams_data:
-            teams_data[tk]["event_wlt"] = f"{rec[0]}-{rec[1]}-{rec[2]}"
+            teams_data[tk]["wlt"] = f"{rec[0]}-{rec[1]}-{rec[2]}"
 
     matches_data["last_score_sync"] = datetime.now().strftime("%b %d %I:%M:%S %p")
     save_matches(matches_data)
@@ -971,7 +971,7 @@ def api_set_match_result():
     teams_data = load_teams()
     for tk, rec in event_records.items():
         if tk in teams_data:
-            teams_data[tk]["event_wlt"] = f"{rec[0]}-{rec[1]}-{rec[2]}"
+            teams_data[tk]["wlt"] = f"{rec[0]}-{rec[1]}-{rec[2]}"
 
     # Advance to next match
     next_key = find_next_match(matches_data, match_key)
@@ -1006,7 +1006,7 @@ def api_edit_team():
     teams_data = load_teams()
     if team_key not in teams_data:
         return jsonify({"status": "error", "message": "Team not found"}), 404
-    allowed = {"team_name", "logo", "logo_enabled", "notes", "epa", "avg_auto_score", "avg_teleop_score", "avg_match_score", "season_wlt", "event_wlt",
+    allowed = {"team_name", "logo", "logo_enabled", "notes", "epa", "avg_auto_score", "avg_teleop_score", "avg_match_score", "season_wlt", "wlt",
                "robot_image_file", "driveteam_image_file", "driveteam_video_file", "teamlogo_image_file"}
     teams_data[team_key].update({k: v for k, v in updates.items() if k in allowed})
     save_teams(teams_data)
@@ -1035,7 +1035,7 @@ def event_ranked_teams(teams_data):
     """Teams as (team_key, team) sorted by event record:
     most wins → fewest losses → most ties."""
     def sort_key(item):
-        wlt = item[1].get("event_wlt", "0-0-0")
+        wlt = item[1].get("wlt", "0-0-0")
         try:
             w, l, t = [int(x) for x in wlt.split("-")]
         except (ValueError, AttributeError):
@@ -1068,7 +1068,7 @@ def api_rankings():
             "team_number": team["team_number"],
             "team_name":   team["team_name"],
             "logo":        get_logo(tk, teams_data),
-            "record":      team.get("event_wlt", "0-0-0"),
+            "record":      team.get("wlt", "0-0-0"),
             "epa":         team.get("epa", 0.0),
         }
         for rank, (tk, team) in enumerate(ranked, 1)
