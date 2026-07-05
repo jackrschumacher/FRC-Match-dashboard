@@ -1148,6 +1148,23 @@
                 <div id="h2hPreview" class="h2h-preview" style="display:none;"></div>
             </div>
 
+            <!-- TEAM PROFILE -->
+            <div class="card">
+                <div class="card-title">
+                    <h2>Team Profile</h2>
+                </div>
+                <div class="divider"></div>
+                <div class="h2h-select-row">
+                    <div class="h2h-select-block" style="flex:1;">
+                        <label>Team</label>
+                        <select id="teamProfileSelect"><option value="">— Select —</option></select>
+                    </div>
+                </div>
+                <button type="button" class="btn-primary" id="setTeamBtn" style="margin-top:4px;">▶ Set Team</button>
+                <div id="teamProfileStatus" class="status"></div>
+                <div id="teamProfilePreview" class="h2h-preview" style="display:none;"></div>
+            </div>
+
             <!-- RECENT MATCHES -->
             <div class="card">
                 <div class="card-title">
@@ -1850,6 +1867,91 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
                 });
             });
         })();
+
+        (function initTeamProfile() {
+            const sel = document.getElementById('teamProfileSelect');
+            const btn = document.getElementById('setTeamBtn');
+            const statusDiv = document.getElementById('teamProfileStatus');
+            const preview = document.getElementById('teamProfilePreview');
+
+            // Populate the select from teams, sorted by team number
+            const sorted = Object.values(teamsState)
+                .sort((a, b) => (a.team_number || 0) - (b.team_number || 0));
+            for (const t of sorted) {
+                const label = `${t.team_number}${t.team_name ? ' · ' + t.team_name : ''}`;
+                sel.add(new Option(label, t.team_number));
+            }
+
+            function renderPreview(d) {
+                if (!d || d.error) { preview.style.display = 'none'; return; }
+                preview.style.display = 'grid';
+                preview.style.gridTemplateColumns = '1fr auto';
+                preview.innerHTML = `
+                    <div class="h2h-preview-team">
+                        <div class="h2h-preview-num">${escHtml(d.team_number)}</div>
+                        <div class="h2h-preview-name">${escHtml(d.team_name || '')}</div>
+                        <div class="h2h-preview-epa">EPA ${escHtml(d.epa ?? '—')}</div>
+                    </div>
+                    <div class="h2h-preview-record">
+                        <div class="h2h-preview-record-val">${escHtml(d.event_wlt || '0-0-0')}</div>
+                        <div class="h2h-preview-record-lbl">Event W-L-T</div>
+                        <div class="h2h-preview-record-val" style="font-size:13px;margin-top:6px;">${escHtml(d.season_wlt || '0-0-0')}</div>
+                        <div class="h2h-preview-record-lbl">Season W-L-T</div>
+                    </div>`;
+            }
+
+            // Load current selection (if any)
+            fetch('/api/team.json')
+                .then(r => r.json())
+                .then(resp => {
+                    const d = Array.isArray(resp) ? resp[0] : resp;
+                    if (d && !d.error) {
+                        sel.value = d.team_number;
+                        renderPreview(d);
+                    }
+                })
+                .catch(() => {});
+
+            btn.addEventListener('click', () => {
+                const num = sel.value;
+                if (!num) {
+                    statusDiv.className = 'status error';
+                    statusDiv.style.display = 'block';
+                    statusDiv.textContent = '✕ Select a team.';
+                    return;
+                }
+                btn.disabled = true;
+                btn.textContent = '⏳ Setting…';
+                fetch('/api/set_team', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ team: num })
+                })
+                .then(r => r.json())
+                .then(d => {
+                    btn.disabled = false;
+                    btn.textContent = '▶ Set Team';
+                    if (d.status === 'success') {
+                        statusDiv.className = 'status success';
+                        statusDiv.style.display = 'block';
+                        statusDiv.textContent = `✓ ${d.team_number} — live at /api/team.json`;
+                        renderPreview(d);
+                    } else {
+                        statusDiv.className = 'status error';
+                        statusDiv.style.display = 'block';
+                        statusDiv.textContent = '✕ ' + (d.message || 'Failed.');
+                    }
+                })
+                .catch(() => {
+                    btn.disabled = false;
+                    btn.textContent = '▶ Set Team';
+                    statusDiv.className = 'status error';
+                    statusDiv.style.display = 'block';
+                    statusDiv.textContent = '✕ Connection error.';
+                });
+            });
+        })();
+
         function escAttr(s) {
             return String(s ?? '').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
         }

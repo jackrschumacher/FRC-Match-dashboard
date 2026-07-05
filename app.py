@@ -640,18 +640,55 @@ def api_active_match():
 
     return jsonify([output])
 
-@app.route("/api/team_profile/<team_number>.json")
-def api_team_profile(team_number):
-    teams_data = load_teams()
-    team_key = f"frc{team_number}"
-
+def build_team_profile(team_key, teams_data):
+    """Team profile feed dict, or None if the team isn't in the current data."""
     if team_key not in teams_data:
-        return jsonify([{"error": "Team not found in current event data"}])
-
+        return None
     result = dict(teams_data[team_key])
     # Computed logo field that respects the logo_enabled toggle
     result["logo_display"] = get_logo(team_key, teams_data)
-    return jsonify([result])
+    return result
+
+@app.route("/api/team_profile/<team_number>.json")
+def api_team_profile(team_number):
+    teams_data = load_teams()
+    profile = build_team_profile(f"frc{team_number}", teams_data)
+    if profile is None:
+        return jsonify([{"error": "Team not found in current event data"}])
+    return jsonify([profile])
+
+@app.route("/api/team.json")
+def api_team_current():
+    """Serve the currently-selected single team (set from the control UI).
+    The number is chosen on the dashboard and stored server-side, so this URL
+    is stable and always reflects the latest team data."""
+    matches_data = load_matches()
+    team_key = matches_data.get("team_profile")
+    if not team_key:
+        return jsonify([{"error": "No team selected"}])
+    teams_data = load_teams()
+    profile = build_team_profile(team_key, teams_data)
+    if profile is None:
+        return jsonify([{"error": "Selected team not in current data"}])
+    return jsonify([profile])
+
+@app.route("/api/set_team", methods=["POST"])
+def api_set_team():
+    """Select the single team served by /api/team.json."""
+    payload = request.get_json(silent=True) or {}
+    num = str(payload.get("team", "")).replace("frc", "").strip()
+    if not num:
+        return jsonify({"status": "error", "message": "Select a team."}), 400
+    team_key = f"frc{num}"
+    teams_data = load_teams()
+    profile = build_team_profile(team_key, teams_data)
+    if profile is None:
+        return jsonify({"status": "error", "message": "Team not in current data."}), 404
+    matches_data = load_matches()
+    matches_data["team_profile"] = team_key
+    save_matches(matches_data)
+    add_log(f"Team profile set: {num}")
+    return jsonify({"status": "success", **profile})
 
 def build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats):
     """Assemble the head-to-head feed: live team profile fields + media paths,
