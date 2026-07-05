@@ -1795,7 +1795,8 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
             // Load current selection (if any)
             fetch('/api/h2h.json')
                 .then(r => r.json())
-                .then(d => {
+                .then(resp => {
+                    const d = Array.isArray(resp) ? resp[0] : resp;
                     if (d && !d.error) {
                         selA.value = d.team_a_number;
                         selB.value = d.team_b_number;
@@ -2118,7 +2119,8 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
         function renderActiveMatch() {
             fetch('/api/active_match.json')
                 .then(r => r.json())
-                .then(data => {
+                .then(resp => {
+                    const data = (Array.isArray(resp) ? resp[0] : resp) || {};
                     const el = document.getElementById('activeMatchDisplay');
                     if (data.error) {
                         el.innerHTML = '<div class="no-content-msg">No active match set</div>';

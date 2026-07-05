@@ -1,6 +1,6 @@
 # MROC-Match-dashboard
 
-[![GitHub Release](https://img.shields.io/github/v/release/jackrschumacher/FRC-Match-dashboard)](https://github.com/jackrschumacher/FRC-Match-dashboard/releases)
+[![GitHub Release](https://img.shields.io/github/v/release/FRC930/FRC-Match-dashboard)](https://github.com/FRC930/FRC-Match-dashboard/releases)
 
 > [!IMPORTANT]
 >

@@ -561,7 +561,7 @@ def api_active_match():
     active_key = matches_data.get("current_match")
     
     if not active_key or active_key not in matches_data.get("event_matches", {}):
-        return jsonify({"error": "No active match set"})
+        return jsonify([{"error": "No active match set"}])
     
     match = matches_data["event_matches"][active_key]
     
@@ -638,7 +638,7 @@ def api_active_match():
             for asset in MEDIA_ASSETS:
                 output[f"{prefix}{i}_{MEDIA_KEY_ABBR[asset]}"] = media_path(tk, teams_data, asset)
 
-    return jsonify(output)
+    return jsonify([output])
 
 @app.route("/api/team_profile/<team_number>.json")
 def api_team_profile(team_number):
@@ -646,12 +646,12 @@ def api_team_profile(team_number):
     team_key = f"frc{team_number}"
 
     if team_key not in teams_data:
-        return jsonify({"error": "Team not found in current event data"})
+        return jsonify([{"error": "Team not found in current event data"}])
 
     result = dict(teams_data[team_key])
     # Computed logo field that respects the logo_enabled toggle
     result["logo_display"] = get_logo(team_key, teams_data)
-    return jsonify(result)
+    return jsonify([result])
 
 def build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats):
     """Assemble the head-to-head feed: live team profile fields + media paths,
@@ -689,7 +689,7 @@ def api_h2h(team_a_number, team_b_number):
     team_b_key = f"frc{team_b_number}"
     teams_data = load_teams()
     h2h_stats = calculate_h2h(team_a_key, team_b_key)
-    return jsonify(build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats))
+    return jsonify([build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats)])
 
 @app.route("/api/h2h.json")
 def api_h2h_current():
@@ -699,9 +699,9 @@ def api_h2h_current():
     team_a_key = h2h.get("team_a")
     team_b_key = h2h.get("team_b")
     if not team_a_key or not team_b_key:
-        return jsonify({"error": "No head-to-head matchup selected"})
+        return jsonify([{"error": "No head-to-head matchup selected"}])
     teams_data = load_teams()
-    return jsonify(build_h2h_output(team_a_key, team_b_key, teams_data, h2h))
+    return jsonify([build_h2h_output(team_a_key, team_b_key, teams_data, h2h)])
 
 @app.route("/api/set_h2h", methods=["POST"])
 def api_set_h2h():
@@ -1076,12 +1076,12 @@ def api_rankings():
 
     entries = [f"#{r['rank']} - {r['team_number']}" for r in rankings]
     sep = RANKING_TICKER_SEP
-    return jsonify({
+    return jsonify([{
         "rankings":   rankings,
         "rank_full":  sep.join(entries),
         "rank_top4":  sep.join(entries[:4]),
         "rank_xtop4": sep.join(entries[4:]),
-    })
+    }])
 
 # --- STARTUP ROUTINE ---
 
