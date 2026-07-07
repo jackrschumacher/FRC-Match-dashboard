@@ -649,14 +649,6 @@ def build_team_profile(team_key, teams_data):
     result["logo_display"] = get_logo(team_key, teams_data)
     return result
 
-@app.route("/api/team_profile/<team_number>.json")
-def api_team_profile(team_number):
-    teams_data = load_teams()
-    profile = build_team_profile(f"frc{team_number}", teams_data)
-    if profile is None:
-        return jsonify([{"error": "Team not found in current event data"}])
-    return jsonify([profile])
-
 @app.route("/api/team.json")
 def api_team_current():
     """Serve the currently-selected single team (set from the control UI).
@@ -719,14 +711,6 @@ def build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats):
             output[f"{label}_{asset}"] = media_path(key, teams_data, asset)
 
     return output
-
-@app.route("/api/h2h/<team_a_number>/<team_b_number>.json")
-def api_h2h(team_a_number, team_b_number):
-    team_a_key = f"frc{team_a_number}"
-    team_b_key = f"frc{team_b_number}"
-    teams_data = load_teams()
-    h2h_stats = calculate_h2h(team_a_key, team_b_key)
-    return jsonify([build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats)])
 
 @app.route("/api/h2h.json")
 def api_h2h_current():
