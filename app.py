@@ -388,10 +388,10 @@ def get_logo(team_key, teams_data):
 # base directory below to produce the full path. Edit these base dirs once per
 # event (e.g. swap "2026MROC" for the next event code).
 MEDIA_ASSETS = {
-    "robot_image":     {"dir": "C:/FRC AV Resources/2026MROC/robot_images",     "ext": ".jpg"},
-    "driveteam_image": {"dir": "C:/FRC AV Resources/2026MROC/driveteam_images", "ext": ".jpg"},
+    "robot_image":     {"dir": "C:/FRC AV Resources/2026MROC/robot_images",     "ext": ".png"},
+    "driveteam_image": {"dir": "C:/FRC AV Resources/2026MROC/driveteam_images", "ext": ".png"},
     "driveteam_video": {"dir": "C:/FRC AV Resources/2026MROC/driveteam_videos", "ext": ".avi"},
-    "teamlogo_image":  {"dir": "C:/FRC AV Resources/2026MROC/teamlogo_images",  "ext": ".jpg"},
+    "teamlogo_image":  {"dir": "C:/FRC AV Resources/2026MROC/teamlogo_images",  "ext": ".png"},
 }
 
 # Abbreviated key suffix for each media asset in the active-match feed, so the
@@ -584,6 +584,7 @@ def api_active_match():
     match_type, match_number = get_match_type_number(match)
 
     output = {
+        "match_name": format_match_name(match),
         "match_type": match_type,
         "match_number": match_number,
 
