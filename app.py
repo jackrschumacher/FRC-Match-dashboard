@@ -1102,7 +1102,7 @@ def api_rankings():
         "rankings":   rankings,
         "rank_full":  sep.join(entries),
         "rank_top4":  sep.join(entries[:4]),
-        "rank_xtop4": sep.join(entries[4:]),
+        "rank_xtop4": sep.join(entries[4:]) + sep,
     }])
 
 # --- STARTUP ROUTINE ---
