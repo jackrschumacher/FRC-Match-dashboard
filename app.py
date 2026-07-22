@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import base64
 import requests
 from datetime import datetime
 from flask import Flask, render_template, jsonify, request
@@ -12,7 +13,12 @@ app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
 
 # --- CONFIGURATION ---
-TBA_API_KEY = os.environ.get("TBA_API_KEY", "") # Loading the API key from .env for security
+# FRC Events API (FIRST's official API). Register for a token at
+# https://frc-events.firstinspires.org/services/API and put the username +
+# token in .env as FRC_API_USERNAME / FRC_API_TOKEN.
+FRC_API_BASE = "https://frc-api.firstinspires.org/v3.0"
+FRC_API_USERNAME = os.environ.get("FRC_API_USERNAME", "")
+FRC_API_TOKEN = os.environ.get("FRC_API_TOKEN", "")
 TEAMS_FILE = "teams.json"
 MATCHES_FILE = "matches.json"
 
@@ -63,13 +69,36 @@ def save_matches(data):
     with open(MATCHES_FILE, "w") as file:
         json.dump(data, file, indent=4)
 
-def fetch_from_tba(endpoint):
-    url = f"https://www.thebluealliance.com/api/v3/{endpoint}"
-    headers = {"X-TBA-Auth-Key": TBA_API_KEY}
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        return response.json()
-    return None
+def _frc_auth_header():
+    raw = f"{FRC_API_USERNAME}:{FRC_API_TOKEN}".encode("utf-8")
+    return "Basic " + base64.b64encode(raw).decode("ascii")
+
+def fetch_from_frc(path, params=None):
+    """GET an FRC Events API endpoint. `path` is relative to the API base and
+    already includes the season, e.g. '2026/rankings/MROC'. Returns parsed JSON,
+    or None on any non-200 / network failure."""
+    url = f"{FRC_API_BASE}/{path}"
+    headers = {"Authorization": _frc_auth_header(), "Accept": "application/json"}
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=(5, 30))
+        if response.status_code == 200:
+            return response.json()
+        add_log(f"FRC API {response.status_code} for {path}")
+        return None
+    except requests.exceptions.RequestException as e:
+        add_log(f"FRC API error for {path}: {e}")
+        return None
+
+def parse_event_key(event_key):
+    """Split the app's event key into (season, event_code) for the FRC Events API.
+
+    Accepts either a year-prefixed key ('2026inind' → '2026', 'ININD') or a bare
+    event code ('inind' / 'ININD' → current season, 'ININD')."""
+    ek = (event_key or "").strip()
+    if len(ek) >= 5 and ek[:4].isdigit():
+        return ek[:4], ek[4:].upper()
+    # No 4-digit year prefix — treat the whole thing as the code, default season.
+    return str(datetime.now().year), ek.upper()
 
 def fetch_statbotics_epa(team_key, year):
     """
@@ -144,43 +173,183 @@ def parse_statbotics(sb_data):
     ties   = record_obj.get("ties",   0) or 0
     return epa, wins, losses, ties
 
+def frc_fetch_event_teams(season, code):
+    """All teams at an event → list of {key, team_number, nickname}.
+    Handles FRC Events pagination."""
+    teams, page = [], 1
+    while True:
+        data = fetch_from_frc(f"{season}/teams", params={"eventCode": code, "page": page})
+        if not data:
+            break
+        for t in data.get("teams", []):
+            num = t.get("teamNumber")
+            teams.append({
+                "key": f"frc{num}",
+                "team_number": num,
+                "nickname": t.get("nameShort") or f"Team {num}",
+            })
+        if page >= (data.get("pageTotal") or 1):
+            break
+        page += 1
+    return teams
+
+def _frc_comp_level(tournament_level, description, match_number):
+    """Map an FRC Events match to the app's (comp_level, set_number, match_number).
+    Qualification → qm; double-elim bracket → sf (set = bracket match #); finals → f.
+    Mirrors the TBA structure so match sorting and names stay identical."""
+    level = (tournament_level or "").lower()
+    desc = (description or "").lower()
+    if level.startswith("qual"):
+        return "qm", 1, match_number
+    if "final" in desc:  # e.g. "Final 1" / "Final 2" / "Final 3"
+        digits = "".join(c for c in desc if c.isdigit())
+        return "f", 1, int(digits) if digits else 1
+    return "sf", match_number, 1
+
+def _frc_alliances(teams_list):
+    """FRC Events match 'teams' (station 'Red1'..'Blue3') → red/blue key lists,
+    ordered by station number."""
+    red, blue = {}, {}
+    for t in teams_list or []:
+        num = t.get("teamNumber")
+        station = (t.get("station") or "")
+        if num is None:
+            continue
+        slot = int("".join(c for c in station if c.isdigit()) or "9")
+        if station.lower().startswith("red"):
+            red[slot] = f"frc{num}"
+        elif station.lower().startswith("blue"):
+            blue[slot] = f"frc{num}"
+    return [red[k] for k in sorted(red)], [blue[k] for k in sorted(blue)]
+
+def _frc_ts(iso):
+    """Parse an FRC Events ISO timestamp (e.g. '2026-03-14T09:00:00') to a unix
+    int, matching TBA's integer time fields. Returns None for empty/unparseable."""
+    if not iso:
+        return None
+    try:
+        return int(datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp())
+    except (ValueError, TypeError):
+        return None
+
+def frc_fetch_event_matches(season, code, event_key):
+    """Build the app's event_matches dict (same shape the TBA path produced) by
+    merging the FRC Events schedule (rosters), match results (scores/winner) and
+    detailed scores (auto/teleop breakdown), across qual + playoff levels."""
+    event_matches = {}
+
+    for level in ("qual", "playoff"):
+        schedule = fetch_from_frc(f"{season}/schedule/{code}", params={"tournamentLevel": level})
+        results  = fetch_from_frc(f"{season}/matches/{code}",  params={"tournamentLevel": level})
+        scores   = fetch_from_frc(f"{season}/scores/{code}/{level}")
+
+        results_by_num = {rm.get("matchNumber"): rm for rm in (results or {}).get("Matches", [])}
+        scores_by_num  = {sm.get("matchNumber"): sm for sm in (scores or {}).get("MatchScores", [])}
+
+        for sched in (schedule or {}).get("Schedule", []):
+            mnum = sched.get("matchNumber")
+            comp_level, set_number, match_number = _frc_comp_level(
+                sched.get("tournamentLevel", level), sched.get("description"), mnum)
+
+            if comp_level == "qm":
+                suffix = f"qm{match_number}"
+            elif comp_level == "sf":
+                suffix = f"sf{set_number}m1"
+            else:
+                suffix = f"f1m{match_number}"
+            match_key = f"{event_key}_{suffix}"
+
+            red_keys, blue_keys = _frc_alliances(sched.get("teams"))
+
+            result = results_by_num.get(mnum, {})
+            red_score  = result.get("scoreRedFinal")
+            blue_score = result.get("scoreBlueFinal")
+            actual_time = _frc_ts(result.get("actualStartTime"))
+            played = bool(actual_time) and red_score is not None and red_score >= 0
+
+            if not played:
+                winning_alliance = None
+            elif red_score > blue_score:
+                winning_alliance = "red"
+            elif blue_score > red_score:
+                winning_alliance = "blue"
+            else:
+                winning_alliance = ""
+
+            # Auto / teleop breakdown from the detailed scores endpoint, stored
+            # under the same keys the averaging code already expects.
+            breakdown = None
+            sm = scores_by_num.get(mnum)
+            if sm:
+                breakdown = {}
+                for alliance in sm.get("alliances", []):
+                    side = (alliance.get("alliance") or "").lower()
+                    if side in ("red", "blue"):
+                        breakdown[side] = {
+                            "totalAutoPoints": alliance.get("autoPoints", 0),
+                            "totalTeleopPoints": alliance.get("teleopPoints", 0),
+                        }
+
+            event_matches[match_key] = {
+                "key": match_key,
+                "comp_level": comp_level,
+                "set_number": set_number,
+                "match_number": match_number,
+                "alliances": {
+                    "red":  {"team_keys": red_keys,  "score": red_score  if played else -1},
+                    "blue": {"team_keys": blue_keys, "score": blue_score if played else -1},
+                },
+                "time": _frc_ts(sched.get("startTime")) or 0,
+                "actual_time": actual_time,
+                "winning_alliance": winning_alliance,
+                "score_breakdown": breakdown,
+            }
+
+    return event_matches
+
 def sync_event_data(event_key):
     add_log(f"Starting sync for event: {event_key}")
-    
-    add_log("Fetching full match schedule from TBA...")
-    matches = fetch_from_tba(f"event/{event_key}/matches")
-    add_log("Fetching team roster from TBA...")
-    teams = fetch_from_tba(f"event/{event_key}/teams/simple")
-    add_log("Fetching current rankings from TBA...")
-    rankings_data = fetch_from_tba(f"event/{event_key}/rankings") 
-    
-    if matches is None or teams is None:
-        add_log(f"ERROR: Failed to fetch TBA data for {event_key}.")
-        return False, f"Failed to fetch data for {event_key}. Check your event key and TBA API key."
-    
-    year = event_key[:4]
+    season, code = parse_event_key(event_key)
+    if not season or not code:
+        return False, f"Bad event key '{event_key}'. Expected e.g. '2026mroc'."
+
+    add_log("Fetching team roster from FRC Events...")
+    teams = frc_fetch_event_teams(season, code)
+    add_log("Fetching full match schedule from FRC Events...")
+    event_matches = frc_fetch_event_matches(season, code, event_key)
+    add_log("Fetching current rankings from FRC Events...")
+    rankings_data = fetch_from_frc(f"{season}/rankings/{code}")
+
+    if not teams:
+        add_log(f"ERROR: Failed to fetch FRC Events data for {event_key}.")
+        return False, f"Failed to fetch data for {event_key}. Check your event key and FRC API credentials."
+
+    year = season
     matches_data = load_matches()
-    
+
+    # Event display name (nice-to-have the TBA path didn't set).
+    event_info = fetch_from_frc(f"{season}/events", params={"eventCode": code})
+    if event_info and event_info.get("Events"):
+        matches_data["event_name"] = event_info["Events"][0].get("name", "")
+
     event_records = {}
-    if rankings_data and "rankings" in rankings_data:
-        for rank_info in rankings_data["rankings"]:
-            tk = rank_info["team_key"]
-            rec = rank_info["record"]
-            event_records[tk] = f"{rec['wins']}-{rec['losses']}-{rec['ties']}"
-    
+    for rank_info in (rankings_data or {}).get("Rankings", []):
+        tk = f"frc{rank_info.get('teamNumber')}"
+        event_records[tk] = f"{rank_info.get('wins', 0)}-{rank_info.get('losses', 0)}-{rank_info.get('ties', 0)}"
+
     matches_data["event_key"] = event_key
-    matches_data["event_matches"] = {m["key"]: m for m in matches}
-    
+    matches_data["event_matches"] = event_matches
+
     team_stats = {}
     for team in teams:
         tk = team["key"]
         team_stats[tk] = {"auto": 0, "teleop": 0, "match": 0, "count": 0}
-        
-    for m in matches:
-        # FIX: Only count matches that have actually been played
+
+    for m in event_matches.values():
+        # Only count matches that have actually been played
         if not m.get("actual_time"):
-            continue 
-            
+            continue
+
         for alliance in ["red", "blue"]:
             # FIX: Get the definitive match score from the alliance block directly
             total_pts = m["alliances"][alliance].get("score", 0)
@@ -245,42 +414,36 @@ def sync_event_data(event_key):
     return True, "Data synchronized successfully!"
 
 def calculate_h2h(team_a_key, team_b_key):
-    wlt_2026 = [0, 0, 0]       
-    wlt_since_2022 = [0, 0, 0]
-    
-    for year in range(2022, 2027):
-        matches = fetch_from_tba(f"team/{team_a_key}/matches/{year}/simple")
-        if not matches:
-            continue
-            
-        for m in matches:
-            if not m.get("actual_time"):
-                continue
-                
-            red_alliance = m["alliances"]["red"]["team_keys"]
-            
-            team_a_alliance = "red" if team_a_key in red_alliance else "blue"
-            opponent_alliance = "blue" if team_a_alliance == "red" else "red"
-            
-            if team_b_key in m["alliances"][opponent_alliance]["team_keys"]:
-                winner = m.get("winning_alliance")
-                is_tie = (winner == "" or winner is None)
-                is_win = (winner == team_a_alliance)
-                
-                if is_tie:
-                    wlt_since_2022[2] += 1
-                    if year == 2026: wlt_2026[2] += 1
-                elif is_win:
-                    wlt_since_2022[0] += 1
-                    if year == 2026: wlt_2026[0] += 1
-                else:
-                    wlt_since_2022[1] += 1
-                    if year == 2026: wlt_2026[1] += 1
+    """Head-to-head record from the CURRENT event's played matches only.
 
-    return {
-        "h2h_2026": f"{wlt_2026[0]}-{wlt_2026[1]}-{wlt_2026[2]}",
-        "h2h_since_2022": f"{wlt_since_2022[0]}-{wlt_since_2022[1]}-{wlt_since_2022[2]}"
-    }
+    The FRC Events API has no cross-season 'all of a team's matches' feed, so we
+    count meetings within the synced event instead. Both output fields carry the
+    same current-event record to preserve the head-to-head feed's shape.
+    """
+    wlt = [0, 0, 0]  # team_a's wins, losses, ties vs team_b
+    matches_data = load_matches()
+
+    for m in matches_data.get("event_matches", {}).values():
+        winner = m.get("winning_alliance")
+        if winner is None:
+            continue  # not played yet
+        red = m["alliances"]["red"]["team_keys"]
+        blue = m["alliances"]["blue"]["team_keys"]
+        a_side = "red" if team_a_key in red else "blue" if team_a_key in blue else None
+        if a_side is None:
+            continue
+        opponent = "blue" if a_side == "red" else "red"
+        if team_b_key not in m["alliances"][opponent]["team_keys"]:
+            continue
+        if winner == "":
+            wlt[2] += 1
+        elif winner == a_side:
+            wlt[0] += 1
+        else:
+            wlt[1] += 1
+
+    record = f"{wlt[0]}-{wlt[1]}-{wlt[2]}"
+    return {"h2h_2026": record, "h2h_since_2022": record}
 
 # --- TEAM ROSTER BUILDER ---
 
@@ -295,8 +458,9 @@ def sync_teams_from_roster(team_numbers, year):
         tk = f"frc{num}"
         add_log(f"Fetching team {num} ({i}/{total})...")
 
-        tba_team = fetch_from_tba(f"team/{tk}/simple")
-        team_name = tba_team.get("nickname", f"Team {num}") if tba_team else f"Team {num}"
+        frc_team = fetch_from_frc(f"{year}/teams", params={"teamNumber": num})
+        tlist = (frc_team or {}).get("teams", [])
+        team_name = tlist[0].get("nameShort", f"Team {num}") if tlist else f"Team {num}"
 
         sb_data = fetch_statbotics_epa(tk, str(year))
         epa, wins, losses, ties = parse_statbotics(sb_data)
@@ -421,7 +585,11 @@ def media_path(team_key, teams_data, asset):
 def control_panel():
     matches_data = load_matches()
     teams_data = load_teams()
-    data = {**matches_data, "event_teams": teams_data}
+    event_matches = matches_data.get("event_matches", {})
+    # Pre-sorted in play order (quals → playoffs) so the template never has to
+    # sort by a possibly-missing 'time' field.
+    sorted_matches = [(k, event_matches[k]) for k in sorted_match_keys(event_matches)]
+    data = {**matches_data, "event_teams": teams_data, "sorted_matches": sorted_matches}
     return render_template("control.html", data=data)
 
 @app.route("/teams")
@@ -470,7 +638,7 @@ def debug_match_breakdown():
                 "blue_keys": list((m["score_breakdown"].get("blue") or {}).keys()),
                 "red_sample": m["score_breakdown"].get("red"),
             })
-    return jsonify({"error": "No played matches with score_breakdown found. TBA may not have posted breakdowns yet."})
+    return jsonify({"error": "No played matches with score_breakdown found. FRC Events may not have posted breakdowns yet."})
 
 @app.route("/api/debug/statbotics/<int:team_number>")
 def debug_statbotics(team_number):
@@ -903,22 +1071,22 @@ def api_sync_scores():
     if not event_key:
         return jsonify({"status": "error", "message": "No event key configured."}), 400
 
-    tba_matches = fetch_from_tba(f"event/{event_key}/matches/simple")
-    if tba_matches is None:
-        return jsonify({"status": "error", "message": "Failed to fetch scores from TBA."}), 502
+    season, code = parse_event_key(event_key)
+    fresh = frc_fetch_event_matches(season, code, event_key)
+    if not fresh:
+        return jsonify({"status": "error", "message": "Failed to fetch scores from FRC Events."}), 502
 
     updated = 0
-    for tm in tba_matches:
-        key = tm.get("key")
+    for key, fm in fresh.items():
         if key not in matches_data["event_matches"]:
             continue
-        if not tm.get("actual_time"):
+        if not fm.get("actual_time"):
             continue
         m = matches_data["event_matches"][key]
-        m["actual_time"]      = tm["actual_time"]
-        m["winning_alliance"] = tm.get("winning_alliance")
-        m["alliances"]["red"]["score"]  = tm["alliances"]["red"].get("score", -1)
-        m["alliances"]["blue"]["score"] = tm["alliances"]["blue"].get("score", -1)
+        m["actual_time"]      = fm["actual_time"]
+        m["winning_alliance"] = fm.get("winning_alliance")
+        m["alliances"]["red"]["score"]  = fm["alliances"]["red"].get("score", -1)
+        m["alliances"]["blue"]["score"] = fm["alliances"]["blue"].get("score", -1)
         updated += 1
 
     # Recalculate event W/L/T
@@ -946,7 +1114,7 @@ def api_sync_scores():
     matches_data["last_score_sync"] = datetime.now().strftime("%b %d %I:%M:%S %p")
     save_matches(matches_data)
     save_teams(teams_data)
-    add_log(f"Score sync: updated {updated} match result(s) from TBA.")
+    add_log(f"Score sync: updated {updated} match result(s) from FRC Events.")
     return jsonify({"status": "success", "updated": updated})
 
 @app.route("/api/set_match_result", methods=["POST"])
@@ -1113,7 +1281,7 @@ def startup_routine():
     event_key = matches_data.get("event_key")
     
     if event_key:
-        add_log(f"Found saved event key: {event_key}. Syncing with TBA...")
+        add_log(f"Found saved event key: {event_key}. Syncing with FRC Events...")
         success, message = sync_event_data(event_key)
         if success:
             add_log("Startup sync complete. Data is fresh.")

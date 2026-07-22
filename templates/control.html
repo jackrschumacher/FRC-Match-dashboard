@@ -1093,7 +1093,7 @@
                     <label for="match_key">Active Match</label>
                     <select id="match_key" name="match_key">
                         <option value="">— Select a Match —</option>
-                        {% for key, match in data.event_matches.items() | sort(attribute='1.time', reverse=False) %}
+                        {% for key, match in data.sorted_matches %}
                             <option value="{{ key }}" {% if key == data.current_match %}selected{% endif %}>
                                 {% if match.custom_name %}{{ match.custom_name }}
                                 {% elif match.comp_level == 'qm' %}Qualification Match {{ match.match_number }}
@@ -1197,8 +1197,8 @@
             </div>
             <div class="modal-body-plain">
                 <form id="syncForm">
-                    <label for="event_key">TBA Event Key</label>
-                    <input type="text" id="event_key" name="event_key" value="{{ data.event_key }}" placeholder="e.g. 2026micmp" required>
+                    <label for="event_key">FRC Event Key</label>
+                    <input type="text" id="event_key" name="event_key" value="{{ data.event_key }}" placeholder="e.g. 2026inind (or inind for this season)" required>
                     <button type="submit">↻ Synchronize Event Data</button>
                 </form>
                 <div id="syncStatus" class="status"></div>
