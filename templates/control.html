@@ -1219,6 +1219,24 @@
     </div>
 
     <!-- ══ SETTINGS MODAL ══ -->
+    <style>
+        .settings-label { display:block; font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:0.1em; text-transform:uppercase; color:var(--text-label); margin-bottom:12px; }
+        .settings-hint { color:var(--text-muted); text-transform:none; letter-spacing:0; }
+        .rating-opts { display:flex; flex-direction:column; gap:8px; margin-bottom:18px; }
+        .rating-opt { display:flex; align-items:flex-start; gap:11px; padding:12px 14px; border:1px solid var(--border-mid); border-radius:6px; background:var(--bg-input); cursor:pointer; transition:border-color .15s, background .15s; }
+        .rating-opt:hover { border-color:var(--border-accent); }
+        .rating-opt input { position:absolute; opacity:0; width:0; height:0; pointer-events:none; }
+        .rating-dot { flex-shrink:0; width:16px; height:16px; margin-top:1px; border-radius:50%; border:2px solid var(--border-mid); position:relative; transition:border-color .15s; }
+        .rating-opt:hover .rating-dot { border-color:var(--border-accent); }
+        .rating-opt:has(input:checked) { border-color:var(--border-focus); background:rgba(26,91,199,0.10); }
+        .rating-opt:has(input:checked) .rating-dot { border-color:var(--border-focus); }
+        .rating-opt:has(input:checked) .rating-dot::after { content:''; position:absolute; inset:3px; border-radius:50%; background:var(--text-accent); }
+        .rating-text { display:flex; flex-direction:column; }
+        .rating-opt-title { font-size:13px; font-weight:600; color:var(--text-primary); }
+        .rating-opt-desc { font-size:11px; color:var(--text-secondary); margin-top:3px; line-height:1.35; }
+        #saveSettingsBtn { width:100%; padding:10px; border:1px solid var(--border-focus); background:var(--bg-btn); color:var(--text-btn); border-radius:5px; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:0.08em; text-transform:uppercase; cursor:pointer; transition:all .15s; }
+        #saveSettingsBtn:hover { background:var(--bg-btn-hover); color:var(--text-btn-hover); }
+    </style>
     <div class="modal-overlay" id="settingsModal">
         <div class="modal modal-sm">
             <div class="modal-header">
@@ -1226,19 +1244,31 @@
                 <button class="modal-close" id="closeSettingsBtn">×</button>
             </div>
             <div class="modal-body-plain">
-                <label>Team Rating Source <span style="color:var(--text-muted);font-size:11px;text-transform:none;letter-spacing:0;">(the EPA field)</span></label>
-                <div style="display:flex; flex-direction:column; gap:10px; margin:8px 0 14px;">
-                    <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; font-size:13px; font-weight:400;">
-                        <input type="radio" name="rating_source" value="epa" style="margin-top:2px;" {% if (data.rating_source or 'epa') == 'epa' %}checked{% endif %}>
-                        <span><strong>Fetch EPA</strong> — from Statbotics (default)</span>
+                <span class="settings-label">Team Rating Source <span class="settings-hint">— how the EPA field is filled on sync</span></span>
+                <div class="rating-opts">
+                    <label class="rating-opt">
+                        <input type="radio" name="rating_source" value="epa" {% if (data.rating_source or 'epa') == 'epa' %}checked{% endif %}>
+                        <span class="rating-dot"></span>
+                        <span class="rating-text">
+                            <span class="rating-opt-title">Fetch EPA</span>
+                            <span class="rating-opt-desc">From Statbotics · the default rating</span>
+                        </span>
                     </label>
-                    <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; font-size:13px; font-weight:400;">
-                        <input type="radio" name="rating_source" value="opr" style="margin-top:2px;" {% if data.rating_source == 'opr' %}checked{% endif %}>
-                        <span><strong>Fetch OPR</strong> — computed by The Blue Alliance</span>
+                    <label class="rating-opt">
+                        <input type="radio" name="rating_source" value="opr" {% if data.rating_source == 'opr' %}checked{% endif %}>
+                        <span class="rating-dot"></span>
+                        <span class="rating-text">
+                            <span class="rating-opt-title">Fetch OPR</span>
+                            <span class="rating-opt-desc">Computed by The Blue Alliance</span>
+                        </span>
                     </label>
-                    <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; font-size:13px; font-weight:400;">
-                        <input type="radio" name="rating_source" value="manual" style="margin-top:2px;" {% if data.rating_source == 'manual' %}checked{% endif %}>
-                        <span><strong>Manual</strong> — keep the values you enter in the Data Editor</span>
+                    <label class="rating-opt">
+                        <input type="radio" name="rating_source" value="manual" {% if data.rating_source == 'manual' %}checked{% endif %}>
+                        <span class="rating-dot"></span>
+                        <span class="rating-text">
+                            <span class="rating-opt-title">Manual</span>
+                            <span class="rating-opt-desc">Keep the values you enter in the Data Editor</span>
+                        </span>
                     </label>
                 </div>
                 <button type="button" id="saveSettingsBtn">Save</button>
