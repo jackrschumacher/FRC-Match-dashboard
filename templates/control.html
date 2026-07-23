@@ -1039,6 +1039,9 @@
             <button class="drawer-item" id="openEditorBtn">
                 <span class="drawer-item-icon">✎</span> Data Editor
             </button>
+            <button class="drawer-item" id="openSettingsBtn">
+                <span class="drawer-item-icon">⛭</span> Settings
+            </button>
 
             <div class="drawer-divider"></div>
             <div class="drawer-section-label">Pages</div>
@@ -1215,6 +1218,35 @@
         </div>
     </div>
 
+    <!-- ══ SETTINGS MODAL ══ -->
+    <div class="modal-overlay" id="settingsModal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h2>Settings</h2>
+                <button class="modal-close" id="closeSettingsBtn">×</button>
+            </div>
+            <div class="modal-body-plain">
+                <label>Team Rating Source <span style="color:var(--text-muted);font-size:11px;text-transform:none;letter-spacing:0;">(the EPA field)</span></label>
+                <div style="display:flex; flex-direction:column; gap:10px; margin:8px 0 14px;">
+                    <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; font-size:13px; font-weight:400;">
+                        <input type="radio" name="rating_source" value="epa" style="margin-top:2px;" {% if (data.rating_source or 'epa') == 'epa' %}checked{% endif %}>
+                        <span><strong>Fetch EPA</strong> — from Statbotics (default)</span>
+                    </label>
+                    <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; font-size:13px; font-weight:400;">
+                        <input type="radio" name="rating_source" value="opr" style="margin-top:2px;" {% if data.rating_source == 'opr' %}checked{% endif %}>
+                        <span><strong>Fetch OPR</strong> — computed by The Blue Alliance</span>
+                    </label>
+                    <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; font-size:13px; font-weight:400;">
+                        <input type="radio" name="rating_source" value="manual" style="margin-top:2px;" {% if data.rating_source == 'manual' %}checked{% endif %}>
+                        <span><strong>Manual</strong> — keep the values you enter in the Data Editor</span>
+                    </label>
+                </div>
+                <button type="button" id="saveSettingsBtn">Save</button>
+                <div id="settingsStatus" class="status"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- ══ DATA EDITOR MODAL ══ -->
     <div class="modal-overlay" id="editorModal">
         <div class="modal">
@@ -1357,7 +1389,7 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
         drawerBackdrop.addEventListener('click', closeDrawer);
 
         // Close drawer when any action item is clicked
-        ['openEventSetupBtn', 'openEditorBtn', 'syncNowBtn', 'syncScoresBtn'].forEach(id => {
+        ['openEventSetupBtn', 'openEditorBtn', 'openSettingsBtn', 'syncNowBtn', 'syncScoresBtn'].forEach(id => {
             document.getElementById(id).addEventListener('click', closeDrawer, { capture: true });
         });
 
@@ -1395,6 +1427,38 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
         document.getElementById('openEventSetupBtn').addEventListener('click', () => eventSetupModal.classList.add('visible'));
         document.getElementById('closeEventSetupBtn').addEventListener('click', () => eventSetupModal.classList.remove('visible'));
         eventSetupModal.addEventListener('click', e => { if (e.target === eventSetupModal) eventSetupModal.classList.remove('visible'); });
+
+        // ── SETTINGS MODAL ──
+        const settingsModal = document.getElementById('settingsModal');
+        document.getElementById('openSettingsBtn').addEventListener('click', () => settingsModal.classList.add('visible'));
+        document.getElementById('closeSettingsBtn').addEventListener('click', () => settingsModal.classList.remove('visible'));
+        settingsModal.addEventListener('click', e => { if (e.target === settingsModal) settingsModal.classList.remove('visible'); });
+        document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+            const sel = document.querySelector('input[name="rating_source"]:checked');
+            const source = sel ? sel.value : 'epa';
+            const statusEl = document.getElementById('settingsStatus');
+            fetch('/api/set_rating_source', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source })
+            })
+            .then(r => r.json())
+            .then(d => {
+                statusEl.style.display = 'block';
+                if (d.status === 'success') {
+                    statusEl.className = 'status success';
+                    statusEl.textContent = `✓ Saved — rating source: ${d.rating_source}. Re-sync to apply.`;
+                } else {
+                    statusEl.className = 'status error';
+                    statusEl.textContent = '✕ ' + (d.message || 'Failed.');
+                }
+            })
+            .catch(() => {
+                statusEl.style.display = 'block';
+                statusEl.className = 'status error';
+                statusEl.textContent = '✕ Connection error.';
+            });
+        });
 
         // ── SYNC FORM ──
         document.getElementById('syncForm').addEventListener('submit', function (e) {

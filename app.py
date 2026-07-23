@@ -163,8 +163,6 @@ def sync_event_data(event_key):
     teams = fetch_from_tba(f"event/{event_key}/teams/simple")
     add_log("Fetching current rankings from TBA...")
     rankings_data = fetch_from_tba(f"event/{event_key}/rankings")
-    add_log("Fetching OPR from TBA (EPA fallback for when Statbotics is down)...")
-    oprs_data = fetch_from_tba(f"event/{event_key}/oprs")
 
     if matches is None or teams is None:
         add_log(f"ERROR: Failed to fetch TBA data for {event_key}.")
@@ -180,8 +178,14 @@ def sync_event_data(event_key):
             rec = rank_info["record"]
             event_records[tk] = f"{rec['wins']}-{rec['losses']}-{rec['ties']}"
 
-    # TBA-computed OPR ({team_key: opr}), used only when Statbotics EPA is down.
-    event_oprs = (oprs_data or {}).get("oprs") or {}
+    # Rating source is user-selectable in Settings: "epa" (Statbotics EPA),
+    # "opr" (TBA-computed OPR), or "manual" (keep whatever is already stored).
+    rating_source = matches_data.get("rating_source", "epa")
+    event_oprs = {}
+    if rating_source == "opr":
+        add_log("Fetching OPR from TBA...")
+        oprs_data = fetch_from_tba(f"event/{event_key}/oprs")
+        event_oprs = (oprs_data or {}).get("oprs") or {}
 
     matches_data["event_key"] = event_key
     matches_data["event_matches"] = {m["key"]: m for m in matches}
@@ -214,30 +218,40 @@ def sync_event_data(event_key):
                     team_stats[tk]["match"] += total_pts
                     team_stats[tk]["count"] += 1
     
-    add_log(f"Building local stats and fetching Statbotics EPA for {len(teams)} teams...")
+    add_log(f"Building local stats for {len(teams)} teams (rating source: {rating_source})...")
     event_teams = {}
-    existing_teams = load_teams()   # preserved values if Statbotics is unavailable
-    stat_failures = 0
+    existing_teams = load_teams()   # preserved values for 'manual' / unavailable sources
+    unavailable = 0
 
     total_teams = len(teams)
     for index, team in enumerate(teams, 1):
         tk = team["key"]
+        prev = existing_teams.get(tk, {})
 
         # Live progress logging
-        add_log(f"Fetching data for Team {team['team_number']} ({index}/{total_teams})...")
+        add_log(f"Processing Team {team['team_number']} ({index}/{total_teams})...")
 
-        sb_data = fetch_statbotics_epa(tk, year)
-
-        if sb_data:
-            epa, wins, losses, ties = parse_statbotics(sb_data)
-            season_wlt = f"{wins}-{losses}-{ties}"
-        else:
-            # Statbotics unavailable — fall back to TBA OPR for the rating (then a
-            # previously-synced EPA), and keep the prior season record.
-            stat_failures += 1
-            prev = existing_teams.get(tk, {})
-            epa = event_oprs.get(tk, prev.get("epa", 0.0))
+        if rating_source == "manual":
+            # Keep the manually-entered rating + season record; fetch nothing.
+            epa = prev.get("epa", 0.0)
             season_wlt = prev.get("season_wlt", "0-0-0")
+        elif rating_source == "opr":
+            opr = event_oprs.get(tk)
+            if opr is None:
+                unavailable += 1
+                epa = prev.get("epa", 0.0)
+            else:
+                epa = opr
+            season_wlt = prev.get("season_wlt", "0-0-0")   # OPR has no season record
+        else:  # "epa" — Statbotics
+            sb_data = fetch_statbotics_epa(tk, year)
+            if sb_data:
+                epa, wins, losses, ties = parse_statbotics(sb_data)
+                season_wlt = f"{wins}-{losses}-{ties}"
+            else:
+                unavailable += 1
+                epa = prev.get("epa", 0.0)
+                season_wlt = prev.get("season_wlt", "0-0-0")
 
         t_stats = team_stats[tk]
         count = t_stats["count"]
@@ -259,9 +273,9 @@ def sync_event_data(event_key):
             "avg_match_score": round(avg_match, 1)
         }
 
-    if stat_failures:
-        add_log(f"WARNING: Statbotics unavailable for {stat_failures}/{total_teams} "
-                f"team(s) — used TBA OPR / previous EPA as the rating fallback.")
+    if unavailable and rating_source != "manual":
+        add_log(f"WARNING: rating source '{rating_source}' unavailable for "
+                f"{unavailable}/{total_teams} team(s) — kept previous value.")
 
     if matches_data.get("current_match") not in matches_data["event_matches"]:
         matches_data["current_match"] = ""
@@ -796,6 +810,23 @@ def api_set_h2h():
     add_log(f"Head-to-head set: {a} vs {b}")
 
     return jsonify({"status": "success", **build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats)})
+
+@app.route("/api/set_rating_source", methods=["POST"])
+def api_set_rating_source():
+    """Choose how the team rating (the 'epa' field) is populated on each sync:
+       'epa'    – fetch EPA from Statbotics (default)
+       'opr'    – fetch OPR computed by TBA
+       'manual' – don't fetch; keep values entered in the Data Editor
+    Takes effect on the next sync."""
+    payload = request.get_json(silent=True) or {}
+    source = str(payload.get("source", "")).strip().lower()
+    if source not in ("epa", "opr", "manual"):
+        return jsonify({"status": "error", "message": "source must be epa, opr, or manual"}), 400
+    matches_data = load_matches()
+    matches_data["rating_source"] = source
+    save_matches(matches_data)
+    add_log(f"Rating source set to '{source}'.")
+    return jsonify({"status": "success", "rating_source": source})
 
 # --- QUICK SYNC & IMPORT ---
 
