@@ -15,6 +15,9 @@ app.config['JSON_SORT_KEYS'] = False
 TBA_API_KEY = os.environ.get("TBA_API_KEY", "") # Loading the API key from .env for security
 TEAMS_FILE = "teams.json"
 MATCHES_FILE = "matches.json"
+# Logs are written to a shared file so they're consistent across every gunicorn
+# worker/process (in-memory logs only show on the process that produced them).
+LOG_FILE = "server.log"
 
 # --- LOGGING SYSTEM ---
 server_logs = []
@@ -26,6 +29,13 @@ def add_log(message):
     server_logs.append(log_entry)
     if len(server_logs) > 500:
         server_logs.pop(0)
+    # Append to the shared log file (O_APPEND is atomic across processes, so
+    # every gunicorn worker's entries land in the same place).
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(log_entry + "\n")
+    except OSError:
+        pass
 
 import threading
 
@@ -512,7 +522,18 @@ def debug_statbotics(team_number):
 
 @app.route("/api/logs")
 def api_logs():
-    return jsonify({"logs": server_logs})
+    # Read the tail of the shared log file so logs are consistent no matter which
+    # worker serves the request. Only the last ~64 KB is read for efficiency.
+    try:
+        with open(LOG_FILE, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 65536))
+            tail = f.read().decode("utf-8", "replace")
+        lines = tail.splitlines()[-500:]
+    except OSError:
+        lines = list(server_logs)[-500:]
+    return jsonify({"logs": lines})
 
 # --- SYNC STATE ---
 sync_state = {"running": False, "success": None, "message": ""}
