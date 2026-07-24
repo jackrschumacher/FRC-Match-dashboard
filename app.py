@@ -79,10 +79,16 @@ def save_matches(data):
 def fetch_from_tba(endpoint):
     url = f"https://www.thebluealliance.com/api/v3/{endpoint}"
     headers = {"X-TBA-Auth-Key": TBA_API_KEY}
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        return response.json()
-    return None
+    # (connect, read) timeout so a slow/stalled TBA can't hang the worker.
+    try:
+        response = requests.get(url, headers=headers, timeout=(5, 20))
+        if response.status_code == 200:
+            return response.json()
+        add_log(f"TBA {response.status_code} for {endpoint}")
+        return None
+    except requests.exceptions.RequestException as e:
+        add_log(f"TBA request error for {endpoint}: {e}")
+        return None
 
 def fetch_statbotics_epa(team_key, year):
     """
