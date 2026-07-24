@@ -1665,8 +1665,8 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
 
         document.getElementById('syncScoresBtn').addEventListener('click', () => syncScores(false));
 
-        // Auto-sync scores every 2 minutes silently
-        setInterval(() => syncScores(true), 2 * 60 * 1000);
+        // Score refresh is handled server-side by the background poller
+        // (SCORE_POLL_SECONDS); the manual button above forces an immediate sync.
 
         // ── LIVE LOG FETCHING ──
         function fetchLogs() {
