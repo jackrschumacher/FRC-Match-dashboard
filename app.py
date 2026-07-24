@@ -2,6 +2,7 @@ import os
 import json
 import time
 import tempfile
+import functools
 import requests
 from datetime import datetime
 from flask import Flask, render_template, jsonify, request
@@ -29,7 +30,12 @@ server_logs = []
 def add_log(message):
     timestamp = datetime.now().strftime("%H:%M:%S")
     log_entry = f"[{timestamp}] {message}"
-    print(log_entry)
+    try:
+        print(log_entry)
+    except UnicodeEncodeError:
+        # Non-UTF-8 stdout (Windows console / bare systemd) can't encode some
+        # characters — never let logging crash the caller.
+        print(log_entry.encode("ascii", "replace").decode("ascii"))
     server_logs.append(log_entry)
     if len(server_logs) > 500:
         server_logs.pop(0)
@@ -42,7 +48,17 @@ def add_log(message):
         pass
 
 import threading
-_io_lock = threading.RLock()  # serializes writes to the shared JSON data files
+_io_lock = threading.RLock()  # serializes read-modify-write of the shared JSON files
+
+def synchronized(fn):
+    """Serialize a mutating endpoint's whole read-modify-write under the I/O lock
+    so concurrent request threads (and the poller) can't overwrite each other's
+    updates. Only for handlers that do NOT block on network I/O."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _io_lock:
+            return fn(*args, **kwargs)
+    return wrapper
 
 # --- DATA MANAGEMENT ---
 def _backup_corrupt(path):
@@ -401,17 +417,22 @@ def sync_teams_from_roster(team_numbers, year):
 
         existing = teams_data.get(tk, {})
         teams_data[tk] = {
+            # Defaults for a brand-new team...
+            "logo":             "",
+            "logo_enabled":     True,
+            "notes":            "",
+            "wlt":              "0-0-0",
+            "avg_auto_score":   0.0,
+            "avg_teleop_score": 0.0,
+            "avg_match_score":  0.0,
+            # ...then preserve everything already stored (logo, notes, wlt, rank,
+            # media *_file overrides, etc.)...
+            **existing,
+            # ...and finally overwrite the freshly-fetched fields.
             "team_number":      num,
             "team_name":        team_name,
-            "logo":             existing.get("logo", ""),
-            "logo_enabled":     existing.get("logo_enabled", True),
-            "notes":            existing.get("notes", ""),
             "season_wlt":       f"{wins}-{losses}-{ties}",
-            "wlt":        existing.get("wlt", "0-0-0"),
             "epa":              round(float(epa), 1),
-            "avg_auto_score":   existing.get("avg_auto_score", 0.0),
-            "avg_teleop_score": existing.get("avg_teleop_score", 0.0),
-            "avg_match_score":  existing.get("avg_match_score", 0.0),
         }
 
     save_teams(teams_data)
@@ -605,12 +626,41 @@ def api_logs():
 
 # --- SYNC STATE ---
 sync_state = {"running": False, "success": None, "message": ""}
+_sync_lock = threading.Lock()   # guards the claim/release of the sync slot
 
-def _run_sync(event_key):
-    global sync_state
-    sync_state = {"running": True, "success": None, "message": ""}
-    success, message = sync_event_data(event_key)
-    sync_state = {"running": False, "success": success, "message": message}
+def _begin_sync():
+    """Atomically claim the single sync slot. Returns True if claimed, or False
+    if a sync is already running (prevents two syncs starting at once)."""
+    with _sync_lock:
+        if sync_state["running"]:
+            return False
+        sync_state.update(running=True, success=None, message="")
+        return True
+
+def _end_sync(success, message):
+    with _sync_lock:
+        sync_state.update(running=False, success=success, message=message)
+
+def run_sync_now(event_key):
+    """Run a full sync in the current thread (must already hold the slot via
+    _begin_sync). Crash-safe: always releases the slot so it can't get stuck."""
+    success, message = False, "error"
+    try:
+        success, message = sync_event_data(event_key)
+    except Exception as e:
+        message = f"Sync error: {e}"
+        add_log(f"ERROR: {message}")
+    finally:
+        _end_sync(success, message)
+    return success, message
+
+def try_start_sync(event_key):
+    """Claim the slot and run a full sync in the background. Returns True if
+    started, False if a sync is already running."""
+    if not _begin_sync():
+        return False
+    threading.Thread(target=run_sync_now, args=(event_key,), daemon=True).start()
+    return True
 
 @app.route("/api/sync_status")
 def api_sync_status():
@@ -618,17 +668,16 @@ def api_sync_status():
 
 @app.route("/api/sync", methods=["POST"])
 def sync_tba_data():
-    global sync_state
-    if sync_state["running"]:
-        return jsonify({"status": "error", "message": "Sync already in progress."}), 409
     event_key = request.form.get("event_key")
     if not event_key:
         add_log("ERROR: Attempted to sync without an event key.")
         return jsonify({"status": "error", "message": "Event key is required."}), 400
-    threading.Thread(target=_run_sync, args=(event_key,), daemon=True).start()
+    if not try_start_sync(event_key):
+        return jsonify({"status": "error", "message": "Sync already in progress."}), 409
     return jsonify({"status": "started"})
 
 @app.route("/api/set_active_match", methods=["POST"])
+@synchronized
 def set_active_match():
     match_key = request.form.get("match_key")
     matches_data = load_matches()
@@ -643,6 +692,7 @@ def set_active_match():
     return jsonify({"status": "error", "message": "Invalid match key"}), 400
 
 @app.route("/api/advance_match", methods=["POST"])
+@synchronized
 def advance_match():
     """Advance to the next match without recording a result for the current one."""
     matches_data = load_matches()
@@ -687,8 +737,13 @@ def api_active_match():
     def get_rank(team_key):
         return ranks.get(team_key, 0)
 
-    red_keys = match["alliances"]["red"]["team_keys"]
-    blue_keys = match["alliances"]["blue"]["team_keys"]
+    # Pad each alliance to exactly 3 so a short/edited/imported roster can't
+    # IndexError the feed (blank slots emit empty fields).
+    def three(side):
+        keys = match["alliances"].get(side, {}).get("team_keys") or []
+        return (keys + ["", "", ""])[:3]
+    red_keys = three("red")
+    blue_keys = three("blue")
 
     match_type, match_number = get_match_type_number(match)
 
@@ -746,7 +801,7 @@ def api_active_match():
     for prefix, keys in (("r", red_keys), ("b", blue_keys)):
         for i, tk in enumerate(keys, start=1):
             for asset in MEDIA_ASSETS:
-                output[f"{prefix}{i}_{MEDIA_KEY_ABBR[asset]}"] = media_path(tk, teams_data, asset)
+                output[f"{prefix}{i}_{MEDIA_KEY_ABBR[asset]}"] = media_path(tk, teams_data, asset) if tk else ""
 
     return jsonify([output])
 
@@ -775,6 +830,7 @@ def api_team_current():
     return jsonify([profile])
 
 @app.route("/api/set_team", methods=["POST"])
+@synchronized
 def api_set_team():
     """Select the single team served by /api/team.json."""
     payload = request.get_json(silent=True) or {}
@@ -802,14 +858,14 @@ def build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats):
         "team_a_number": team_a_key.replace("frc", ""),
         "team_a_name": profile_a.get("team_name", ""),
         "team_a_logo": get_logo(team_a_key, teams_data),
-        "team_a_wlt": profile_a.get("wlt", ""),
-        "team_a_epa": profile_a.get("epa", ""),
+        "team_a_wlt": profile_a.get("wlt", "0-0-0"),
+        "team_a_epa": profile_a.get("epa", 0.0),
 
         "team_b_number": team_b_key.replace("frc", ""),
         "team_b_name": profile_b.get("team_name", ""),
         "team_b_logo": get_logo(team_b_key, teams_data),
-        "team_b_wlt": profile_b.get("wlt", ""),
-        "team_b_epa": profile_b.get("epa", ""),
+        "team_b_wlt": profile_b.get("wlt", "0-0-0"),
+        "team_b_epa": profile_b.get("epa", 0.0),
 
         "h2h_2026": h2h_stats.get("h2h_2026", ""),
         "h2h_since_2022": h2h_stats.get("h2h_since_2022", ""),
@@ -837,7 +893,11 @@ def api_h2h_current():
 @app.route("/api/set_h2h", methods=["POST"])
 def api_set_h2h():
     """Select the two teams for the head-to-head feed. Computes and stores the
-    win/loss record now so /api/h2h.json stays cheap to poll."""
+    win/loss record now so /api/h2h.json stays cheap to poll.
+
+    NOT @synchronized: calculate_h2h() makes several TBA calls, and holding the
+    I/O lock across them would freeze every other write. The lock guards only the
+    quick read-modify-write below."""
     payload = request.get_json(silent=True) or {}
     a = str(payload.get("team_a", "")).replace("frc", "").strip()
     b = str(payload.get("team_b", "")).replace("frc", "").strip()
@@ -848,24 +908,26 @@ def api_set_h2h():
 
     team_a_key = f"frc{a}"
     team_b_key = f"frc{b}"
-    teams_data = load_teams()
 
     add_log(f"Computing head-to-head: {a} vs {b}…")
-    h2h_stats = calculate_h2h(team_a_key, team_b_key)
+    h2h_stats = calculate_h2h(team_a_key, team_b_key)   # network — no lock held
 
-    matches_data = load_matches()
-    matches_data["h2h"] = {
-        "team_a": team_a_key,
-        "team_b": team_b_key,
-        "h2h_2026": h2h_stats["h2h_2026"],
-        "h2h_since_2022": h2h_stats["h2h_since_2022"],
-    }
-    save_matches(matches_data)
+    with _io_lock:
+        matches_data = load_matches()
+        matches_data["h2h"] = {
+            "team_a": team_a_key,
+            "team_b": team_b_key,
+            "h2h_2026": h2h_stats["h2h_2026"],
+            "h2h_since_2022": h2h_stats["h2h_since_2022"],
+        }
+        save_matches(matches_data)
     add_log(f"Head-to-head set: {a} vs {b}")
 
+    teams_data = load_teams()
     return jsonify({"status": "success", **build_h2h_output(team_a_key, team_b_key, teams_data, h2h_stats)})
 
 @app.route("/api/set_rating_source", methods=["POST"])
+@synchronized
 def api_set_rating_source():
     """Choose how the team rating (the 'epa' field) is populated on each sync:
        'epa'    – fetch EPA from Statbotics (default)
@@ -886,17 +948,15 @@ def api_set_rating_source():
 
 @app.route("/api/sync_current", methods=["POST"])
 def api_sync_current():
-    global sync_state
-    if sync_state["running"]:
-        return jsonify({"status": "error", "message": "Sync already in progress."}), 409
-    matches_data = load_matches()
-    event_key = matches_data.get("event_key", "")
+    event_key = load_matches().get("event_key", "")
     if not event_key:
         return jsonify({"status": "error", "message": "No event key configured. Use Event Setup first."}), 400
-    threading.Thread(target=_run_sync, args=(event_key,), daemon=True).start()
+    if not try_start_sync(event_key):
+        return jsonify({"status": "error", "message": "Sync already in progress."}), 409
     return jsonify({"status": "started"})
 
 @app.route("/api/import/schedule", methods=["POST"])
+@synchronized
 def api_import_schedule():
     import csv, io
     csv_text = request.form.get("csv_data", "").strip()
@@ -976,7 +1036,6 @@ def api_import_schedule():
 
 @app.route("/api/import/teams_from_schedule", methods=["POST"])
 def api_import_teams_from_schedule():
-    global sync_state
     if sync_state["running"]:
         return jsonify({"status": "error", "message": "A sync is already in progress."}), 409
 
@@ -1001,16 +1060,24 @@ def api_import_teams_from_schedule():
     year = event_key[:4] if len(event_key) >= 4 else str(datetime.now().year)
     team_list = sorted(team_numbers)
 
+    if not _begin_sync():
+        return jsonify({"status": "error", "message": "A sync is already in progress."}), 409
+
     def _run():
-        global sync_state
-        sync_state = {"running": True, "success": None, "message": ""}
-        success, message = sync_teams_from_roster(team_list, year)
-        sync_state = {"running": False, "success": success, "message": message}
+        success, message = False, "error"
+        try:
+            success, message = sync_teams_from_roster(team_list, year)
+        except Exception as e:
+            message = f"Roster build error: {e}"
+            add_log(f"ERROR: {message}")
+        finally:
+            _end_sync(success, message)
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"status": "started", "team_count": len(team_list)})
 
 @app.route("/api/reset/schedule", methods=["POST"])
+@synchronized
 def api_reset_schedule():
     matches_data = load_matches()
     count = len(matches_data.get("event_matches", {}))
@@ -1023,64 +1090,73 @@ def api_reset_schedule():
 # --- MANUAL EDIT ENDPOINTS ---
 
 def refresh_scores():
-    """Pull the latest match results from TBA into matches.json and recompute
-    event W/L/T. Shared by the manual endpoint and the background poller.
-    Returns (ok, updated_count, message)."""
-    matches_data = load_matches()
-    event_key = matches_data.get("event_key", "")
+    """Pull the latest match results + official rankings from TBA into the JSON
+    files and recompute event W/L/T. Shared by the manual endpoint and the
+    background poller. Returns (ok, updated_count, message).
+
+    Network fetches happen OUTSIDE the I/O lock; only the read-modify-write is
+    locked (and reloads fresh) so it can't lose a concurrent manual edit."""
+    event_key = load_matches().get("event_key", "")
     if not event_key:
         return False, 0, "No event key configured."
 
+    # --- network (no lock held) ---
     tba_matches = fetch_from_tba(f"event/{event_key}/matches/simple")
     if tba_matches is None:
         return False, 0, "Failed to fetch scores from TBA."
-
-    updated = 0
-    for tm in tba_matches:
-        key = tm.get("key")
-        if key not in matches_data["event_matches"]:
-            continue
-        if not tm.get("actual_time"):
-            continue
-        m = matches_data["event_matches"][key]
-        m["actual_time"]      = tm["actual_time"]
-        m["winning_alliance"] = tm.get("winning_alliance")
-        m["alliances"]["red"]["score"]  = tm["alliances"]["red"].get("score", -1)
-        m["alliances"]["blue"]["score"] = tm["alliances"]["blue"].get("score", -1)
-        updated += 1
-
-    # Recalculate event W/L/T
-    event_records = {}
-    for mk, match in matches_data["event_matches"].items():
-        w = match.get("winning_alliance")
-        if w is None:
-            continue
-        for side in ["red", "blue"]:
-            for tk in match["alliances"][side].get("team_keys", []):
-                if tk not in event_records:
-                    event_records[tk] = [0, 0, 0]
-                if w == "":
-                    event_records[tk][2] += 1
-                elif w == side:
-                    event_records[tk][0] += 1
-                else:
-                    event_records[tk][1] += 1
-
-    teams_data = load_teams()
-    for tk, rec in event_records.items():
-        if tk in teams_data:
-            teams_data[tk]["wlt"] = f"{rec[0]}-{rec[1]}-{rec[2]}"
-
-    # Refresh official TBA rankings too (used unless manual results are entered).
     rankings_data = fetch_from_tba(f"event/{event_key}/rankings")
-    for rank_info in (rankings_data or {}).get("rankings", []):
-        tk = rank_info.get("team_key")
-        if tk in teams_data:
-            teams_data[tk]["rank"] = rank_info.get("rank", 0)
 
-    matches_data["last_score_sync"] = datetime.now().strftime("%b %d %I:%M:%S %p")
-    save_matches(matches_data)
-    save_teams(teams_data)
+    # --- critical section: reload fresh, apply, save (locked, no network) ---
+    with _io_lock:
+        matches_data = load_matches()
+        event_matches = matches_data.get("event_matches", {})
+
+        updated = 0
+        for tm in tba_matches:
+            key = tm.get("key")
+            if key not in event_matches:
+                continue
+            if not tm.get("actual_time"):
+                continue
+            m = event_matches[key]
+            m["actual_time"]      = tm["actual_time"]
+            m["winning_alliance"] = tm.get("winning_alliance")
+            m["alliances"]["red"]["score"]  = tm["alliances"]["red"].get("score", -1)
+            m["alliances"]["blue"]["score"] = tm["alliances"]["blue"].get("score", -1)
+            updated += 1
+
+        # Recalculate event W/L/T from all matches with a result.
+        event_records = {}
+        for mk, match in event_matches.items():
+            w = match.get("winning_alliance")
+            if w is None:
+                continue
+            for side in ["red", "blue"]:
+                for tk in match["alliances"][side].get("team_keys", []):
+                    if tk not in event_records:
+                        event_records[tk] = [0, 0, 0]
+                    if w == "":
+                        event_records[tk][2] += 1
+                    elif w == side:
+                        event_records[tk][0] += 1
+                    else:
+                        event_records[tk][1] += 1
+
+        teams_data = load_teams()
+        for tk, rec in event_records.items():
+            if tk in teams_data:
+                teams_data[tk]["wlt"] = f"{rec[0]}-{rec[1]}-{rec[2]}"
+
+        # Refresh official TBA rankings too (used unless manual results entered).
+        for rank_info in (rankings_data or {}).get("rankings", []):
+            tk = rank_info.get("team_key")
+            if tk in teams_data:
+                teams_data[tk]["rank"] = rank_info.get("rank", 0)
+
+        matches_data["last_score_sync"] = datetime.now().strftime("%b %d %I:%M:%S %p")
+        save_matches(matches_data)
+        save_teams(teams_data)
+
     return True, updated, "ok"
 
 @app.route("/api/sync_scores", methods=["POST"])
@@ -1093,6 +1169,7 @@ def api_sync_scores():
     return jsonify({"status": "success", "updated": updated})
 
 @app.route("/api/set_match_result", methods=["POST"])
+@synchronized
 def api_set_match_result():
     payload = request.get_json()
     match_key = payload.get("match_key")
@@ -1155,6 +1232,7 @@ def api_set_match_result():
     return jsonify({"status": "success", "next_match": next_key})
 
 @app.route("/api/edit/match_title", methods=["POST"])
+@synchronized
 def api_edit_match_title():
     payload = request.get_json()
     match_key = payload.get("match_key")
@@ -1168,6 +1246,7 @@ def api_edit_match_title():
     return jsonify({"status": "success"})
 
 @app.route("/api/edit/team", methods=["POST"])
+@synchronized
 def api_edit_team():
     payload = request.get_json()
     team_key = payload.get("team_key")
@@ -1188,6 +1267,7 @@ def api_edit_team():
     return jsonify({"status": "success"})
 
 @app.route("/api/edit/match_roster", methods=["POST"])
+@synchronized
 def api_edit_match_roster():
     payload = request.get_json()
     match_key = payload.get("match_key")
@@ -1309,11 +1389,13 @@ def startup_routine():
     
     if event_key:
         add_log(f"Found saved event key: {event_key}. Syncing with TBA...")
-        success, message = sync_event_data(event_key)
-        if success:
-            add_log("Startup sync complete. Data is fresh.")
+        # Claim the sync slot so the poller can't overlap the startup sync.
+        if _begin_sync():
+            success, message = run_sync_now(event_key)
+            add_log("Startup sync complete. Data is fresh." if success
+                    else f"Startup sync failed: {message}")
         else:
-            add_log(f"Startup sync failed: {message}")
+            add_log("A sync is already running; skipping startup sync.")
     else:
         add_log("No previous event key found. Waiting for user configuration via the Web UI.")
     add_log("---------------------------------")
