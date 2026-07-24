@@ -181,11 +181,16 @@ def sync_event_data(event_key):
     matches_data = load_matches()
     
     event_records = {}
+    official_ranks = {}
     if rankings_data and "rankings" in rankings_data:
         for rank_info in rankings_data["rankings"]:
             tk = rank_info["team_key"]
             rec = rank_info["record"]
             event_records[tk] = f"{rec['wins']}-{rec['losses']}-{rec['ties']}"
+            official_ranks[tk] = rank_info.get("rank", 0)
+
+    # A full sync is an authoritative TBA refresh — go back to official ranking.
+    matches_data["rankings_manual"] = False
 
     # Rating source is user-selectable in Settings: "epa" (Statbotics EPA),
     # "opr" (TBA-computed OPR), or "manual" (keep whatever is already stored).
@@ -276,6 +281,7 @@ def sync_event_data(event_key):
             "team_name": team["nickname"],
             "season_wlt": season_wlt,
             "wlt": event_records.get(tk, "0-0-0"),
+            "rank": official_ranks.get(tk, 0),
             "epa": round(float(epa), 1),
             "avg_auto_score": round(avg_auto, 1),
             "avg_teleop_score": round(avg_teleop, 1),
@@ -638,7 +644,7 @@ def api_active_match():
     def get_wlt(team_key):
         return teams_data.get(team_key, {}).get("wlt", "0-0-0")
 
-    ranks = event_rank_map(teams_data)
+    ranks = event_rank_map(teams_data, matches_data)
     def get_rank(team_key):
         return ranks.get(team_key, 0)
 
@@ -1026,6 +1032,13 @@ def refresh_scores():
         if tk in teams_data:
             teams_data[tk]["wlt"] = f"{rec[0]}-{rec[1]}-{rec[2]}"
 
+    # Refresh official TBA rankings too (used unless manual results are entered).
+    rankings_data = fetch_from_tba(f"event/{event_key}/rankings")
+    for rank_info in (rankings_data or {}).get("rankings", []):
+        tk = rank_info.get("team_key")
+        if tk in teams_data:
+            teams_data[tk]["rank"] = rank_info.get("rank", 0)
+
     matches_data["last_score_sync"] = datetime.now().strftime("%b %d %I:%M:%S %p")
     save_matches(matches_data)
     save_teams(teams_data)
@@ -1086,6 +1099,10 @@ def api_set_match_result():
         if tk in teams_data:
             teams_data[tk]["wlt"] = f"{rec[0]}-{rec[1]}-{rec[2]}"
 
+    # A manual result means the standings no longer match TBA — rank locally
+    # (by W-L-T) until the next full "Sync Event Data" re-establishes TBA order.
+    matches_data["rankings_manual"] = True
+
     # Advance to next match
     next_key = find_next_match(matches_data, match_key)
     if next_key:
@@ -1123,6 +1140,11 @@ def api_edit_team():
                "robot_image_file", "driveteam_image_file", "driveteam_video_file", "teamlogo_image_file"}
     teams_data[team_key].update({k: v for k, v in updates.items() if k in allowed})
     save_teams(teams_data)
+    # Manually editing the event record switches ranking to local W-L-T.
+    if "wlt" in updates:
+        matches_data = load_matches()
+        matches_data["rankings_manual"] = True
+        save_matches(matches_data)
     add_log(f"Manual edit: updated {team_key}")
     return jsonify({"status": "success"})
 
@@ -1144,21 +1166,40 @@ def api_edit_match_roster():
     add_log(f"Manual edit: updated roster for {match_key}")
     return jsonify({"status": "success"})
 
-def event_ranked_teams(teams_data):
-    """Teams as (team_key, team) sorted by event record:
-    most wins → fewest losses → most ties."""
-    def sort_key(item):
-        wlt = item[1].get("wlt", "0-0-0")
-        try:
-            w, l, t = [int(x) for x in wlt.split("-")]
-        except (ValueError, AttributeError):
-            w, l, t = 0, 0, 0
-        return (w, -l, t)
-    return sorted(teams_data.items(), key=sort_key, reverse=True)
+def _wlt_sort_key(item):
+    wlt = item[1].get("wlt", "0-0-0")
+    try:
+        w, l, t = [int(x) for x in wlt.split("-")]
+    except (ValueError, AttributeError):
+        w, l, t = 0, 0, 0
+    return (w, -l, t)
 
-def event_rank_map(teams_data):
-    """Map team_key -> current event rank (1-based)."""
-    return {tk: rank for rank, (tk, _) in enumerate(event_ranked_teams(teams_data), 1)}
+def _use_official_ranks(teams_data, matches_data):
+    """True when we should rank by TBA's official rank: ranks are present and no
+    manual match results have been entered since the last full sync."""
+    if matches_data.get("rankings_manual"):
+        return False
+    return any(t.get("rank") for t in teams_data.values())
+
+def event_ranked_teams(teams_data, matches_data=None):
+    """Teams as (team_key, team) in ranking order. Uses TBA's official rank
+    (refreshed on each score sync) unless manual results have been entered —
+    then it falls back to local W-L-T (most wins → fewest losses → most ties)."""
+    if matches_data is None:
+        matches_data = load_matches()
+    if _use_official_ranks(teams_data, matches_data):
+        # Official order; teams without a rank sort to the bottom.
+        return sorted(teams_data.items(), key=lambda item: item[1].get("rank") or 9999)
+    return sorted(teams_data.items(), key=_wlt_sort_key, reverse=True)
+
+def event_rank_map(teams_data, matches_data=None):
+    """Map team_key -> displayed rank: the official TBA rank in TBA mode, else
+    the 1-based position from the local W-L-T ordering."""
+    if matches_data is None:
+        matches_data = load_matches()
+    if _use_official_ranks(teams_data, matches_data):
+        return {tk: (t.get("rank") or 0) for tk, t in teams_data.items()}
+    return {tk: pos for pos, (tk, _) in enumerate(event_ranked_teams(teams_data, matches_data), 1)}
 
 # Separator between entries in the one-line rankings ticker strings
 # (rank_full / rank_top4 / rank_xtop4). Adjust the spacing here to taste.
@@ -1173,18 +1214,20 @@ def api_rankings():
       rank_xtop4 – same, ranks 5 and beyond
     """
     teams_data = load_teams()
-    ranked = event_ranked_teams(teams_data)
+    matches_data = load_matches()
+    ranked = event_ranked_teams(teams_data, matches_data)
+    rank_of = event_rank_map(teams_data, matches_data)
 
     rankings = [
         {
-            "rank":        rank,
+            "rank":        rank_of.get(tk, pos),
             "team_number": team["team_number"],
             "team_name":   team["team_name"],
             "logo":        get_logo(tk, teams_data),
             "record":      team.get("wlt", "0-0-0"),
             "epa":         team.get("epa", 0.0),
         }
-        for rank, (tk, team) in enumerate(ranked, 1)
+        for pos, (tk, team) in enumerate(ranked, 1)
     ]
 
     entries = [f"#{r['rank']} - {r['team_number']}" for r in rankings]
