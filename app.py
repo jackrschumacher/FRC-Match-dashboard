@@ -1255,11 +1255,11 @@ def score_poller():
                 continue  # nothing configured to poll yet
             ok, updated, message = refresh_scores()
             if not ok:
-                add_log(f"Auto score sync failed: {message}")
+                add_log(f"Auto score and rankings sync failed: {message}")
             else:
-                add_log(f"Auto score sync: updated {updated} result(s) from TBA.")
+                add_log(f"Auto and rankings score sync: updated {updated} result(s) from TBA.")
         except Exception as e:
-            add_log(f"Auto score sync error: {e}")
+            add_log(f"Auto and rankings score sync error: {e}")
 
 # --- STARTUP ROUTINE ---
 
