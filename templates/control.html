@@ -1864,8 +1864,8 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
         // ══════════════════════════════════════
         // DATA EDITOR MODAL
         // ══════════════════════════════════════
-        const teamsState = {{ data.event_teams | tojson }};
-        const matchesState = {{ data.event_matches | tojson }};
+        let teamsState = {{ data.event_teams | tojson }};
+        let matchesState = {{ data.event_matches | tojson }};
 
         function escHtml(s) {
             return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -1996,7 +1996,7 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
                         <div class="h2h-preview-epa">EPA ${escHtml(d.epa ?? '—')}</div>
                     </div>
                     <div class="h2h-preview-record">
-                        <div class="h2h-preview-record-val">${escHtml(d.event_wlt || '0-0-0')}</div>
+                        <div class="h2h-preview-record-val">${escHtml(d.wlt || '0-0-0')}</div>
                         <div class="h2h-preview-record-lbl">Event W-L-T</div>
                         <div class="h2h-preview-record-val" style="font-size:13px;margin-top:6px;">${escHtml(d.season_wlt || '0-0-0')}</div>
                         <div class="h2h-preview-record-lbl">Season W-L-T</div>
@@ -2142,7 +2142,7 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
                     <td>${t.avg_teleop_score}</td>
                     <td>${t.avg_match_score}</td>
                     <td>${escHtml(t.season_wlt)}</td>
-                    <td>${escHtml(t.event_wlt)}</td>
+                    <td>${escHtml(t.wlt || '0-0-0')}</td>
                     <td><button class="btn-tbl btn-tbl-edit" data-key="${k}">Edit</button></td>
                 </tr>`;
 
@@ -2207,7 +2207,7 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
                 <td><input type="number" id="e_teleop" value="${t.avg_teleop_score}" step="0.1"></td>
                 <td><input type="number" id="e_match"  value="${t.avg_match_score}"  step="0.1"></td>
                 <td><input type="text"   id="e_swlt"   value="${escAttr(t.season_wlt)}"></td>
-                <td><input type="text"   id="e_ewlt"   value="${escAttr(t.event_wlt)}"></td>
+                <td><input type="text"   id="e_ewlt"   value="${escAttr(t.wlt || '0-0-0')}"></td>
                 <td>
                     <button class="btn-tbl btn-tbl-save"   id="save-${id}">Save</button>
                     <button class="btn-tbl btn-tbl-cancel" id="cancel-${id}">✕</button>
@@ -2225,7 +2225,7 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
                 avg_teleop_score: parseFloat(document.getElementById('e_teleop').value) || 0,
                 avg_match_score:  parseFloat(document.getElementById('e_match').value)  || 0,
                 season_wlt:       document.getElementById('e_swlt').value,
-                event_wlt:        document.getElementById('e_ewlt').value,
+                wlt:              document.getElementById('e_ewlt').value,
             };
             fetch('/api/edit/team', {
                 method: 'POST',
@@ -2388,6 +2388,69 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
             }).join('');
         }
         renderRecentMatches();
+
+        // ── LIVE MULTI-DEVICE SYNC ──
+        // Poll shared server state so changes made on one device (results, edits,
+        // active match, imports) appear on the others within a few seconds —
+        // without clobbering whatever this user is actively editing.
+        let lastServerCurrent = (document.getElementById('match_key') || {}).value || '';
+
+        function activeElementInside(container) {
+            return !!container && container.contains(document.activeElement);
+        }
+
+        function refreshMatchDropdown(serverCurrent) {
+            const sel = document.getElementById('match_key');
+            if (!sel || document.activeElement === sel) return;  // don't disrupt active use
+            const prevValue = sel.value;
+            const order = { qm: 0, sf: 1, f: 2 };
+            const keys = Object.keys(matchesState).sort((a, b) => {
+                const ma = matchesState[a], mb = matchesState[b];
+                const la = order[ma.comp_level] ?? 9, lb = order[mb.comp_level] ?? 9;
+                if (la !== lb) return la - lb;
+                if ((ma.set_number || 0) !== (mb.set_number || 0)) return (ma.set_number || 0) - (mb.set_number || 0);
+                return (ma.match_number || 0) - (mb.match_number || 0);
+            });
+            sel.innerHTML = '<option value="">— Select a Match —</option>' +
+                keys.map(k => `<option value="${k}">${escHtml(formatMatchNameJS(matchesState[k]))}</option>`).join('');
+            // Follow the server's active match unless this user has manually
+            // picked a different one (mid-action); then keep their selection.
+            if (prevValue === '' || prevValue === lastServerCurrent) {
+                sel.value = serverCurrent;
+            } else if (matchesState[prevValue]) {
+                sel.value = prevValue;
+            }
+            lastServerCurrent = serverCurrent;
+        }
+
+        function pollSharedState() {
+            Promise.all([
+                fetch('/api/matches').then(r => r.json()).catch(() => null),
+                fetch('/api/teams').then(r => r.json()).catch(() => null),
+            ]).then(([md, td]) => {
+                if (md && md.matches) {
+                    matchesState = md.matches;
+                    refreshMatchDropdown(md.current_match || '');
+                    renderRecentMatches();
+                }
+                if (td && typeof td === 'object' && !Array.isArray(td)) {
+                    teamsState = td;
+                    // Refresh editor views only when open AND not being edited,
+                    // so we never overwrite an in-progress edit.
+                    if (editorModal.classList.contains('visible')) {
+                        const tbody = document.getElementById('teamTableBody');
+                        if (!tbody.querySelector('tr.editing') && !activeElementInside(tbody)) {
+                            renderTeamTable(document.getElementById('teamFilter').value);
+                        }
+                        const rosterPane = document.getElementById('tab-roster');
+                        if (rosterPane && rosterPane.classList.contains('active') && !activeElementInside(rosterPane)) {
+                            populateRosterMatchSelect();
+                        }
+                    }
+                }
+            }).catch(() => {});
+        }
+        setInterval(pollSharedState, 5000);
     </script>
 </body>
 </html>
