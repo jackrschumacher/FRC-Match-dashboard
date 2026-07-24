@@ -18,6 +18,9 @@ MATCHES_FILE = "matches.json"
 # Logs are written to a shared file so they're consistent across every gunicorn
 # worker/process (in-memory logs only show on the process that produced them).
 LOG_FILE = "server.log"
+# Background score poller interval, in seconds (0 disables it). Runs server-side
+# so scores stay fresh even when no browser has the control panel open.
+SCORE_POLL_SECONDS = int(os.environ.get("SCORE_POLL_SECONDS", "120"))
 
 # --- LOGGING SYSTEM ---
 server_logs = []
@@ -968,16 +971,18 @@ def api_reset_schedule():
 
 # --- MANUAL EDIT ENDPOINTS ---
 
-@app.route("/api/sync_scores", methods=["POST"])
-def api_sync_scores():
+def refresh_scores():
+    """Pull the latest match results from TBA into matches.json and recompute
+    event W/L/T. Shared by the manual endpoint and the background poller.
+    Returns (ok, updated_count, message)."""
     matches_data = load_matches()
     event_key = matches_data.get("event_key", "")
     if not event_key:
-        return jsonify({"status": "error", "message": "No event key configured."}), 400
+        return False, 0, "No event key configured."
 
     tba_matches = fetch_from_tba(f"event/{event_key}/matches/simple")
     if tba_matches is None:
-        return jsonify({"status": "error", "message": "Failed to fetch scores from TBA."}), 502
+        return False, 0, "Failed to fetch scores from TBA."
 
     updated = 0
     for tm in tba_matches:
@@ -1018,6 +1023,14 @@ def api_sync_scores():
     matches_data["last_score_sync"] = datetime.now().strftime("%b %d %I:%M:%S %p")
     save_matches(matches_data)
     save_teams(teams_data)
+    return True, updated, "ok"
+
+@app.route("/api/sync_scores", methods=["POST"])
+def api_sync_scores():
+    ok, updated, message = refresh_scores()
+    if not ok:
+        code = 400 if "event key" in message else 502
+        return jsonify({"status": "error", "message": message}), code
     add_log(f"Score sync: updated {updated} match result(s) from TBA.")
     return jsonify({"status": "success", "updated": updated})
 
@@ -1177,6 +1190,28 @@ def api_rankings():
         "rank_xtop4": sep.join(entries[4:]) + sep,
     }])
 
+# --- BACKGROUND SCORE POLLER ---
+
+def score_poller():
+    """Refresh scores from TBA on a fixed interval, server-side, so results stay
+    fresh even when no browser has the control panel open."""
+    add_log(f"Background score poller started (every {SCORE_POLL_SECONDS}s).")
+    while True:
+        time.sleep(SCORE_POLL_SECONDS)
+        try:
+            # Skip while a full sync is running — it rewrites the same files.
+            if sync_state.get("running"):
+                continue
+            if not load_matches().get("event_key"):
+                continue  # nothing configured to poll yet
+            ok, updated, message = refresh_scores()
+            if not ok:
+                add_log(f"Auto score poll failed: {message}")
+            elif updated:
+                add_log(f"Auto score poll: updated {updated} result(s) from TBA.")
+        except Exception as e:
+            add_log(f"Auto score poll error: {e}")
+
 # --- STARTUP ROUTINE ---
 
 def startup_routine():
@@ -1200,6 +1235,8 @@ def startup_routine():
 # - Under Gunicorn/Waitress: __name__ != "__main__", so this block is what triggers it.
 if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
     threading.Thread(target=startup_routine, daemon=True).start()
+    if SCORE_POLL_SECONDS > 0:
+        threading.Thread(target=score_poller, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
