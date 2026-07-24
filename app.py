@@ -1031,7 +1031,7 @@ def api_sync_scores():
     if not ok:
         code = 400 if "event key" in message else 502
         return jsonify({"status": "error", "message": message}), code
-    add_log(f"Score sync: updated {updated} match result(s) from TBA.")
+    add_log(f"Manual score sync: updated {updated} match result(s) from TBA.")
     return jsonify({"status": "success", "updated": updated})
 
 @app.route("/api/set_match_result", methods=["POST"])
@@ -1206,11 +1206,11 @@ def score_poller():
                 continue  # nothing configured to poll yet
             ok, updated, message = refresh_scores()
             if not ok:
-                add_log(f"Auto score poll failed: {message}")
-            elif updated:
-                add_log(f"Auto score poll: updated {updated} result(s) from TBA.")
+                add_log(f"Auto score sync failed: {message}")
+            else:
+                add_log(f"Auto score sync: updated {updated} result(s) from TBA.")
         except Exception as e:
-            add_log(f"Auto score poll error: {e}")
+            add_log(f"Auto score sync error: {e}")
 
 # --- STARTUP ROUTINE ---
 
