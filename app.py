@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import tempfile
 import requests
 from datetime import datetime
 from flask import Flask, render_template, jsonify, request
@@ -41,40 +42,78 @@ def add_log(message):
         pass
 
 import threading
+_io_lock = threading.RLock()  # serializes writes to the shared JSON data files
 
 # --- DATA MANAGEMENT ---
+def _backup_corrupt(path):
+    """Move an unreadable file aside (timestamped) instead of silently discarding
+    it, so a bad file can be recovered/inspected rather than overwritten."""
+    try:
+        if os.path.exists(path):
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            os.replace(path, f"{path}.corrupt.{ts}")
+    except OSError:
+        pass
+
+def _atomic_write_json(path, data):
+    """Write JSON via a temp file + atomic rename so a reader never sees a
+    half-written file. This is what prevents corrupted JSON when writes overlap
+    (multiple threads / the poller / an event change) or a write is interrupted.
+    The temp file lives in the same directory so os.replace is atomic."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        # os.replace is atomic, but on Windows it fails if a reader currently has
+        # the file open — retry briefly. On POSIX it succeeds on the first try.
+        for attempt in range(20):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.025)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
 def load_teams():
     if not os.path.exists(TEAMS_FILE) or os.path.getsize(TEAMS_FILE) == 0:
-        save_teams({})
         return {}
     try:
-        with open(TEAMS_FILE, "r") as file:
+        with open(TEAMS_FILE, "r", encoding="utf-8") as file:
             return json.load(file)
-    except (json.JSONDecodeError, OSError):
-        add_log("WARNING: teams.json is corrupt, resetting to empty.")
-        save_teams({})
+    except (json.JSONDecodeError, OSError) as e:
+        _backup_corrupt(TEAMS_FILE)
+        add_log(f"WARNING: teams.json unreadable ({e}); backed it up, using empty set.")
         return {}
 
 def save_teams(data):
-    with open(TEAMS_FILE, "w") as file:
-        json.dump(data, file, indent=4)
+    with _io_lock:
+        _atomic_write_json(TEAMS_FILE, data)
 
 def load_matches():
     default = {"event_key": "", "event_name": "", "current_match": "", "event_matches": {}}
     if not os.path.exists(MATCHES_FILE) or os.path.getsize(MATCHES_FILE) == 0:
-        save_matches(default)
         return default
     try:
-        with open(MATCHES_FILE, "r") as file:
+        with open(MATCHES_FILE, "r", encoding="utf-8") as file:
             return json.load(file)
-    except (json.JSONDecodeError, OSError):
-        add_log("WARNING: matches.json is corrupt, resetting to defaults.")
-        save_matches(default)
+    except (json.JSONDecodeError, OSError) as e:
+        _backup_corrupt(MATCHES_FILE)
+        add_log(f"WARNING: matches.json unreadable ({e}); backed it up, using defaults.")
         return default
 
 def save_matches(data):
-    with open(MATCHES_FILE, "w") as file:
-        json.dump(data, file, indent=4)
+    with _io_lock:
+        _atomic_write_json(MATCHES_FILE, data)
 
 def fetch_from_tba(endpoint):
     url = f"https://www.thebluealliance.com/api/v3/{endpoint}"
