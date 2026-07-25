@@ -297,11 +297,16 @@ def sync_event_data(event_key):
     for index, team in enumerate(teams, 1):
         tk = team["key"]
         prev = existing_teams.get(tk, {})
+        locked = bool(prev.get("stats_locked"))
 
         # Live progress logging
         add_log(f"Processing Team {team['team_number']} ({index}/{total_teams})...")
 
-        if rating_source == "manual":
+        if locked:
+            # Stats locked by the user — don't fetch or recompute; keep as specified.
+            epa = prev.get("epa", 0.0)
+            season_wlt = prev.get("season_wlt", "0-0-0")
+        elif rating_source == "manual":
             # Keep the manually-entered rating + season record; fetch nothing.
             epa = prev.get("epa", 0.0)
             season_wlt = prev.get("season_wlt", "0-0-0")
@@ -332,17 +337,30 @@ def sync_event_data(event_key):
         else:
             avg_auto = avg_teleop = avg_match = 0.0
 
-        event_teams[tk] = {
-            "team_number": team["team_number"],
-            "team_name": team["nickname"],
-            "season_wlt": season_wlt,
-            "wlt": event_records.get(tk, "0-0-0"),
-            "rank": official_ranks.get(tk, 0),
-            "epa": round(float(epa), 1),
-            "avg_auto_score": round(avg_auto, 1),
+        # Preserve everything already stored (logo, logo_enabled, notes, media
+        # filenames, the stats_locked flag) — these never come from TBA and must
+        # survive a sync. Then refresh the synced fields, UNLESS the team's stats
+        # are locked, in which case its stats are left exactly as specified.
+        team_dict = {**prev, "team_number": team["team_number"]}
+        # Team name is config-like (you often customize the display name), so it's
+        # preserved once stored — only a brand-new team takes TBA's nickname.
+        team_dict.setdefault("team_name", team["nickname"])
+        fresh = {
+            "season_wlt":       season_wlt,
+            "wlt":              event_records.get(tk, "0-0-0"),
+            "rank":             official_ranks.get(tk, 0),
+            "epa":              round(float(epa), 1),
+            "avg_auto_score":   round(avg_auto, 1),
             "avg_teleop_score": round(avg_teleop, 1),
-            "avg_match_score": round(avg_match, 1)
+            "avg_match_score":  round(avg_match, 1),
         }
+        if locked:
+            # Fill only missing keys (e.g. a brand-new team); never overwrite.
+            for k, v in fresh.items():
+                team_dict.setdefault(k, v)
+        else:
+            team_dict.update(fresh)
+        event_teams[tk] = team_dict
 
     if unavailable and rating_source != "manual":
         add_log(f"WARNING: rating source '{rating_source}' unavailable for "
@@ -1267,16 +1285,22 @@ def api_edit_team():
     if team_key not in teams_data:
         return jsonify({"status": "error", "message": "Team not found"}), 404
     allowed = {"team_name", "logo", "logo_enabled", "notes", "epa", "avg_auto_score", "avg_teleop_score", "avg_match_score", "season_wlt", "wlt",
-               "robot_image_file", "driveteam_image_file", "driveteam_video_file", "teamlogo_image_file"}
+               "robot_image_file", "driveteam_image_file", "driveteam_video_file", "teamlogo_image_file", "stats_locked"}
     teams_data[team_key].update({k: v for k, v in updates.items() if k in allowed})
+    # Editing a stat locks it so a future TBA sync won't overwrite what you
+    # specified — unless the caller set stats_locked explicitly (e.g. to unlock).
+    stat_fields = {"epa", "avg_auto_score", "avg_teleop_score", "avg_match_score", "wlt", "season_wlt"}
+    if "stats_locked" not in updates and stat_fields & set(updates):
+        teams_data[team_key]["stats_locked"] = True
     save_teams(teams_data)
     # Manually editing the event record switches ranking to local W-L-T.
     if "wlt" in updates:
         matches_data = load_matches()
         matches_data["rankings_manual"] = True
         save_matches(matches_data)
-    add_log(f"Manual edit: updated {team_key}")
-    return jsonify({"status": "success"})
+    locked_note = " (stats locked)" if teams_data[team_key].get("stats_locked") else ""
+    add_log(f"Manual edit: updated {team_key}{locked_note}")
+    return jsonify({"status": "success", "stats_locked": teams_data[team_key].get("stats_locked", False)})
 
 @app.route("/api/edit/match_roster", methods=["POST"])
 @synchronized
