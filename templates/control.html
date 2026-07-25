@@ -1350,6 +1350,17 @@
                             </div>
                         </div>
                         <button type="button" class="btn-primary" id="saveRosterBtn">▶ Save Match Roster</button>
+                        <div id="noveltyActions" style="display:none;">
+                            <div style="display:flex; gap:8px;">
+                                <button type="button" class="btn-primary" id="noveltyAppendBtn" style="flex:1;">➕ Add to Schedule</button>
+                                <button type="button" class="btn-primary" id="noveltyDisplayBtn" style="flex:1; background:var(--bg-raised); border-color:var(--border-mid); color:var(--text-secondary);">📺 Display Only</button>
+                            </div>
+                            <div style="font-size:11px; color:var(--text-muted); margin-top:6px; line-height:1.4;">
+                                <strong>Add to Schedule</strong> inserts it as an exhibition match and makes it active.
+                                <strong>Display Only</strong> shows it on the graphics feed without adding it to the schedule.
+                            </div>
+                        </div>
+                        <button type="button" id="clearNoveltyBtn" style="display:none; width:100%; margin-top:8px; padding:8px; border:1px solid var(--border-mid); background:transparent; color:var(--text-muted); border-radius:4px; font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:0.06em; text-transform:uppercase; cursor:pointer;">✕ Clear Novelty Display</button>
                         <div id="rosterStatus" class="status"></div>
                     </div>
                 </div>
@@ -2270,6 +2281,7 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
                 return ta - tb;
             });
             sel.innerHTML = '<option value="">— Select a Match —</option>' +
+                `<option value="__novelty__" ${current === '__novelty__' ? 'selected' : ''}>➕ New Novelty / Mentor Match</option>` +
                 keys.map(k => `<option value="${k}" ${k === current ? 'selected' : ''}>${formatMatchNameJS(matchesState[k])}</option>`).join('');
             if (current && matchesState[current]) loadRoster(current);
         }
@@ -2284,7 +2296,60 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
             document.getElementById('rosterTitle').value = m.custom_name || '';
         }
 
-        document.getElementById('rosterMatchSelect').addEventListener('change', e => loadRoster(e.target.value));
+        function setNoveltyMode(on) {
+            document.getElementById('saveRosterBtn').style.display  = on ? 'none' : '';
+            document.getElementById('noveltyActions').style.display = on ? 'block' : 'none';
+            document.getElementById('clearNoveltyBtn').style.display = on ? 'block' : 'none';
+        }
+        function clearRosterFields() {
+            ['red1','red2','red3','blue1','blue2','blue3','rosterTitle'].forEach(id => document.getElementById(id).value = '');
+        }
+        function onRosterSelectChange(value) {
+            if (value === '__novelty__') {
+                clearRosterFields();
+                document.getElementById('rosterTitle').placeholder = 'e.g. Mentor Match';
+                setNoveltyMode(true);
+            } else {
+                document.getElementById('rosterTitle').placeholder = 'e.g. Qualification Match 1';
+                setNoveltyMode(false);
+                loadRoster(value);
+            }
+        }
+        document.getElementById('rosterMatchSelect').addEventListener('change', e => onRosterSelectChange(e.target.value));
+
+        function submitNovelty(mode) {
+            const name = document.getElementById('rosterTitle').value.trim();
+            const red_keys  = ['red1','red2','red3'].map(id => document.getElementById(id).value.trim()).filter(Boolean);
+            const blue_keys = ['blue1','blue2','blue3'].map(id => document.getElementById(id).value.trim()).filter(Boolean);
+            if (!red_keys.length && !blue_keys.length) { showRosterStatus('error', 'Enter at least one team.'); return; }
+            fetch('/api/novelty_match', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode, name, red_keys, blue_keys })
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.status === 'success') {
+                    if (mode === 'append') {
+                        showRosterStatus('success', '✓ Added to schedule as ' + d.match_key + ' and set active.');
+                        populateRosterMatchSelect();
+                    } else {
+                        showRosterStatus('success', '✓ Now showing on the graphics feed (not added to schedule).');
+                    }
+                    renderActiveMatch();
+                } else {
+                    showRosterStatus('error', '✕ ' + (d.message || 'Failed.'));
+                }
+            })
+            .catch(() => showRosterStatus('error', '✕ Connection error.'));
+        }
+        document.getElementById('noveltyAppendBtn').addEventListener('click', () => submitNovelty('append'));
+        document.getElementById('noveltyDisplayBtn').addEventListener('click', () => submitNovelty('display'));
+        document.getElementById('clearNoveltyBtn').addEventListener('click', () => {
+            fetch('/api/novelty_match', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'clear' }) })
+            .then(r => r.json())
+            .then(() => { showRosterStatus('success', '✓ Novelty display cleared.'); renderActiveMatch(); })
+            .catch(() => showRosterStatus('error', '✕ Connection error.'));
+        });
 
         document.getElementById('saveRosterBtn').addEventListener('click', () => {
             const matchKey = document.getElementById('rosterMatchSelect').value;

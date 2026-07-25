@@ -504,6 +504,8 @@ def format_match_name(match):
         return f"Semifinal {set_num} Match {match_num}"
     elif level == "f":
         return f"Finals Match {match_num}"
+    elif level == "nov":
+        return "Exhibition Match"
     return f"{level.upper()}{set_num}-{match_num}"
 
 def get_match_type_number(match):
@@ -519,6 +521,8 @@ def get_match_type_number(match):
         return "Playoff", str(set_num)
     elif level == "f":
         return "Final", str(match_num)
+    elif level == "nov":
+        return "Exhibition", str(match_num)
     return level.upper(), str(match_num)
 
 # --- LOGO HELPER ---
@@ -711,6 +715,7 @@ def set_active_match():
     
     if match_key in matches_data["event_matches"]:
         matches_data["current_match"] = match_key
+        matches_data["active_override"] = None   # a real match cancels a novelty display
         save_matches(matches_data)
         add_log(f"Active match updated to: {match_key}")
         return jsonify({"status": "success", "current_match": match_key})
@@ -733,9 +738,76 @@ def advance_match():
         return jsonify({"status": "error", "message": "No next match — this is the last one"}), 400
 
     matches_data["current_match"] = next_key
+    matches_data["active_override"] = None   # a real match cancels a novelty display
     save_matches(matches_data)
     add_log(f"Advanced to next match (no result): {next_key}")
     return jsonify({"status": "success", "next_match": next_key})
+
+def _norm_team_keys(keys):
+    """Trim, drop blanks, and prefix bare numbers with 'frc'."""
+    out = []
+    for k in keys or []:
+        k = str(k).strip()
+        if k:
+            out.append(k if k.startswith("frc") else f"frc{k}")
+    return out
+
+@app.route("/api/novelty_match", methods=["POST"])
+@synchronized
+def api_novelty_match():
+    """Create a 'novelty' / exhibition match (e.g. a mentor match).
+    mode='append'  → add it to the event schedule and make it the active match
+    mode='display' → show it on the graphics feed WITHOUT adding it to the schedule
+    mode='clear'   → remove a display-only novelty and return to the real match
+    Never overwrites existing scheduled matches."""
+    payload = request.get_json(silent=True) or {}
+    mode = payload.get("mode", "display")
+    name = (payload.get("name") or "").strip()
+    red  = _norm_team_keys(payload.get("red_keys"))
+    blue = _norm_team_keys(payload.get("blue_keys"))
+
+    matches_data = load_matches()
+
+    if mode == "clear":
+        matches_data["active_override"] = None
+        save_matches(matches_data)
+        add_log("Novelty display cleared.")
+        return jsonify({"status": "success", "mode": "clear"})
+
+    if mode == "append":
+        prefix = matches_data.get("event_key") or "local"
+        event_matches = matches_data.setdefault("event_matches", {})
+        n = 1 + sum(1 for m in event_matches.values() if m.get("comp_level") == "nov")
+        key = f"{prefix}_nov{n}"
+        while key in event_matches:   # never clobber an existing key
+            n += 1
+            key = f"{prefix}_nov{n}"
+        event_matches[key] = {
+            "key": key,
+            "comp_level": "nov",
+            "set_number": 1,
+            "match_number": n,
+            "custom_name": name,
+            "alliances": {
+                "red":  {"team_keys": red,  "score": -1},
+                "blue": {"team_keys": blue, "score": -1},
+            },
+            "time": None,
+            "actual_time": None,
+            "winning_alliance": None,
+            "score_breakdown": None,
+        }
+        matches_data["current_match"] = key      # display it now
+        matches_data["active_override"] = None
+        save_matches(matches_data)
+        add_log(f"Novelty match added to schedule: {key} ('{name or 'Exhibition'}')")
+        return jsonify({"status": "success", "mode": "append", "match_key": key})
+
+    # mode == "display" — show it without adding to the schedule
+    matches_data["active_override"] = {"name": name, "red": red, "blue": blue}
+    save_matches(matches_data)
+    add_log(f"Novelty match displayed (not scheduled): '{name or 'Exhibition'}'")
+    return jsonify({"status": "success", "mode": "display"})
 
 # --- API ENDPOINTS ---
 
@@ -744,12 +816,26 @@ def advance_match():
 def api_active_match():
     matches_data = load_matches()
     teams_data = load_teams()
-    active_key = matches_data.get("current_match")
-    
-    if not active_key or active_key not in matches_data.get("event_matches", {}):
-        return jsonify([{"error": "No active match set"}])
-    
-    match = matches_data["event_matches"][active_key]
+
+    # A display-only novelty match (not in the schedule) takes over the feed
+    # when set; otherwise show the currently-selected scheduled match.
+    override = matches_data.get("active_override")
+    if override:
+        match = {
+            "custom_name":  override.get("name", ""),
+            "comp_level":   "nov",
+            "set_number":   1,
+            "match_number": 1,
+            "alliances": {
+                "red":  {"team_keys": override.get("red",  []), "score": -1},
+                "blue": {"team_keys": override.get("blue", []), "score": -1},
+            },
+        }
+    else:
+        active_key = matches_data.get("current_match")
+        if not active_key or active_key not in matches_data.get("event_matches", {}):
+            return jsonify([{"error": "No active match set"}])
+        match = matches_data["event_matches"][active_key]
     
     def get_epa(team_key):
         return teams_data.get(team_key, {}).get("epa", 0.0)
