@@ -1173,14 +1173,15 @@ def refresh_scores():
                         event_records[tk][1] += 1
 
         teams_data = load_teams()
+        # Don't touch teams whose stats are locked — keep what the user specified.
         for tk, rec in event_records.items():
-            if tk in teams_data:
+            if tk in teams_data and not teams_data[tk].get("stats_locked"):
                 teams_data[tk]["wlt"] = f"{rec[0]}-{rec[1]}-{rec[2]}"
 
         # Refresh official TBA rankings too (used unless manual results entered).
         for rank_info in (rankings_data or {}).get("rankings", []):
             tk = rank_info.get("team_key")
-            if tk in teams_data:
+            if tk in teams_data and not teams_data[tk].get("stats_locked"):
                 teams_data[tk]["rank"] = rank_info.get("rank", 0)
 
         matches_data["last_score_sync"] = datetime.now().strftime("%b %d %I:%M:%S %p")
