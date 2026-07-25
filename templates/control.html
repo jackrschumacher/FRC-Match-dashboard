@@ -2205,12 +2205,13 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
             const row = document.getElementById(`row-${id}`);
             row.classList.add('editing');
             row.innerHTML = `
-                <td style="white-space:nowrap;">${t.team_number}<br>
-                    <label style="font-size:10px;color:var(--text-secondary);white-space:nowrap;cursor:pointer;">
-                        <input type="checkbox" id="e_lock" ${t.stats_locked ? 'checked' : ''}> 🔒 lock stats
-                    </label><br>
-                    <label style="font-size:10px;color:var(--text-secondary);white-space:nowrap;cursor:pointer;">
-                        <input type="checkbox" id="e_disabled" ${t.disabled ? 'checked' : ''}> 🚫 disable
+                <td style="white-space:nowrap;">
+                    <div style="font-weight:700;margin-bottom:4px;">${t.team_number}</div>
+                    <label style="display:flex;align-items:center;gap:5px;font-size:10px;color:var(--text-secondary);white-space:nowrap;cursor:pointer;margin-bottom:3px;">
+                        <input type="checkbox" id="e_lock" ${t.stats_locked ? 'checked' : ''} style="width:14px;height:14px;min-width:0;flex:0 0 auto;appearance:auto;-webkit-appearance:checkbox;padding:0;margin:0;box-shadow:none;border-radius:0;"> 🔒 lock stats
+                    </label>
+                    <label style="display:flex;align-items:center;gap:5px;font-size:10px;color:var(--text-secondary);white-space:nowrap;cursor:pointer;">
+                        <input type="checkbox" id="e_disabled" ${t.disabled ? 'checked' : ''} style="width:14px;height:14px;min-width:0;flex:0 0 auto;appearance:auto;-webkit-appearance:checkbox;padding:0;margin:0;box-shadow:none;border-radius:0;"> 🚫 disable
                     </label></td>
                 <td><input type="text"   id="e_name"   value="${escAttr(t.team_name)}"></td>
                 <td><input type="text"   id="e_logo"   value="${escAttr(t.logo || '')}" placeholder="e.g. 930.jpg"></td>

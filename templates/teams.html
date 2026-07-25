@@ -397,13 +397,14 @@
                     <th data-col="team_number" class="sorted"># <span class="sort-arrow">↑</span></th>
                     <th data-col="team_name">Name <span class="sort-arrow">↕</span></th>
                     <th>Logo File</th>
-                    <th>Enabled</th>
+                    <th>Logo On</th>
+                    <th title="Turn off to disable the team — excluded from rankings and feeds">Active</th>
                     <th>Notes</th>
                     <th class="stat-header" data-col="epa">EPA <span class="sort-arrow">↕</span></th>
                     <th class="stat-header" data-col="avg_auto_score">Avg Auto <span class="sort-arrow">↕</span></th>
                     <th class="stat-header" data-col="avg_teleop_score">Avg Teleop <span class="sort-arrow">↕</span></th>
                     <th class="stat-header" data-col="avg_match_score">Avg Score <span class="sort-arrow">↕</span></th>
-                    <th class="stat-header" data-col="event_wlt">Event W-L-T <span class="sort-arrow">↕</span></th>
+                    <th class="stat-header" data-col="wlt">Event W-L-T <span class="sort-arrow">↕</span></th>
                     <th title="Robot image filename">Robot Image</th>
                     <th title="Drive team image filename">Drive Team Img</th>
                     <th title="Drive team video filename">Drive Team Vid</th>
@@ -456,16 +457,17 @@
 
         const tbody = document.getElementById('teamBody');
         if (!keys.length) {
-            tbody.innerHTML = `<tr><td colspan="14" class="empty-msg">No teams found</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="15" class="empty-msg">No teams found</td></tr>`;
             return;
         }
 
         tbody.innerHTML = keys.map(k => {
             const t = teamsData[k];
             const enabled = t.logo_enabled !== false;
+            const active = t.disabled !== true;
             const logo = t.logo || '';
             const notes = t.notes || '';
-            return `<tr class="${enabled ? '' : 'disabled'}" data-key="${k}">
+            return `<tr class="${(!enabled || !active) ? 'disabled' : ''}" data-key="${k}">
                 <td class="team-num">${t.team_number}</td>
                 <td>
                     <input class="name-input" type="text"
@@ -490,6 +492,13 @@
                         <input type="checkbox" ${enabled ? 'checked' : ''} data-key="${k}" data-field="logo_enabled">
                         <span class="toggle-track"></span>
                         <span class="toggle-label">${enabled ? 'On' : 'Off'}</span>
+                    </label>
+                </td>
+                <td>
+                    <label class="toggle">
+                        <input type="checkbox" ${active ? 'checked' : ''} data-key="${k}" data-field="disabled">
+                        <span class="toggle-track"></span>
+                        <span class="toggle-label">${active ? 'Active' : 'Off'}</span>
                     </label>
                 </td>
                 <td>
@@ -526,10 +535,10 @@
                 </td>
                 <td class="stat">
                     <input class="stat-input stat-wlt" type="text"
-                        value="${esc(t.event_wlt || '0-0-0')}"
+                        value="${esc(t.wlt || '0-0-0')}"
                         placeholder="0-0-0"
-                        data-key="${k}" data-field="event_wlt"
-                        data-original="${esc(t.event_wlt || '0-0-0')}">
+                        data-key="${k}" data-field="wlt"
+                        data-original="${esc(t.wlt || '0-0-0')}">
                 </td>
                 ${mediaCell(k, t, 'robot_image')}
                 ${mediaCell(k, t, 'driveteam_image')}
@@ -560,18 +569,34 @@
             input.addEventListener('keydown', e => { if (e.key === 'Enter') input.blur(); });
         });
 
-        // Toggle events
+        // Toggle events — Logo On (logo_enabled)
         tbody.querySelectorAll('input[data-field="logo_enabled"]').forEach(cb => {
             cb.addEventListener('change', () => {
                 const key = cb.dataset.key;
                 teamsData[key].logo_enabled = cb.checked;
                 saveTeamField(key, { logo_enabled: cb.checked });
-                const row = cb.closest('tr');
-                row.classList.toggle('disabled', !cb.checked);
-                const label = row.querySelector('.toggle-label');
+                const label = cb.closest('.toggle').querySelector('.toggle-label');
                 if (label) label.textContent = cb.checked ? 'On' : 'Off';
+                updateRowDim(cb.closest('tr'), key);
             });
         });
+
+        // Toggle events — Active (checked = active; stored as disabled = !checked)
+        tbody.querySelectorAll('input[data-field="disabled"]').forEach(cb => {
+            cb.addEventListener('change', () => {
+                const key = cb.dataset.key;
+                teamsData[key].disabled = !cb.checked;
+                saveTeamField(key, { disabled: !cb.checked });
+                const label = cb.closest('.toggle').querySelector('.toggle-label');
+                if (label) label.textContent = cb.checked ? 'Active' : 'Off';
+                updateRowDim(cb.closest('tr'), key);
+            });
+        });
+    }
+
+    function updateRowDim(row, key) {
+        const t = teamsData[key] || {};
+        row.classList.toggle('disabled', t.logo_enabled === false || t.disabled === true);
     }
 
     function saveTeamField(key, updates, inputEl) {
