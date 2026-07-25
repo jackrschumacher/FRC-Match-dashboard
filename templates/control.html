@@ -2133,10 +2133,13 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
                 const lockBadge = t.stats_locked
                     ? ' <span title="Stats locked — a TBA sync will not overwrite them" style="color:#e0a800;">🔒</span>'
                     : '';
-                const mainRow = `<tr id="row-${id}">
+                const disabledBadge = t.disabled
+                    ? ' <span title="Disabled — excluded from rankings and feeds" style="color:#ee5555;font-size:9px;font-weight:700;letter-spacing:0.06em;">DISABLED</span>'
+                    : '';
+                const mainRow = `<tr id="row-${id}"${t.disabled ? ' style="opacity:0.5;"' : ''}>
                     <td style="white-space:nowrap;">
                         <button class="btn-tbl btn-tbl-expand" data-key="${k}" title="${matchCount} match(es)">${expandIcon}</button>
-                        ${t.team_number}${lockBadge}
+                        ${t.team_number}${lockBadge}${disabledBadge}
                     </td>
                     <td>${escHtml(t.team_name)}</td>
                     <td style="color:var(--text-secondary);font-size:11px;">${escHtml(t.logo || '')}</td>
@@ -2205,6 +2208,9 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
                 <td style="white-space:nowrap;">${t.team_number}<br>
                     <label style="font-size:10px;color:var(--text-secondary);white-space:nowrap;cursor:pointer;">
                         <input type="checkbox" id="e_lock" ${t.stats_locked ? 'checked' : ''}> 🔒 lock stats
+                    </label><br>
+                    <label style="font-size:10px;color:var(--text-secondary);white-space:nowrap;cursor:pointer;">
+                        <input type="checkbox" id="e_disabled" ${t.disabled ? 'checked' : ''}> 🚫 disable
                     </label></td>
                 <td><input type="text"   id="e_name"   value="${escAttr(t.team_name)}"></td>
                 <td><input type="text"   id="e_logo"   value="${escAttr(t.logo || '')}" placeholder="e.g. 930.jpg"></td>
@@ -2233,6 +2239,7 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
                 season_wlt:       document.getElementById('e_swlt').value,
                 wlt:              document.getElementById('e_ewlt').value,
                 stats_locked:     document.getElementById('e_lock').checked,
+                disabled:         document.getElementById('e_disabled').checked,
             };
             fetch('/api/edit/team', {
                 method: 'POST',

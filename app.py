@@ -1293,7 +1293,7 @@ def api_edit_team():
     if team_key not in teams_data:
         return jsonify({"status": "error", "message": "Team not found"}), 404
     allowed = {"team_name", "logo", "logo_enabled", "notes", "epa", "avg_auto_score", "avg_teleop_score", "avg_match_score", "season_wlt", "wlt",
-               "robot_image_file", "driveteam_image_file", "driveteam_video_file", "teamlogo_image_file", "stats_locked"}
+               "robot_image_file", "driveteam_image_file", "driveteam_video_file", "teamlogo_image_file", "stats_locked", "disabled"}
     teams_data[team_key].update({k: v for k, v in updates.items() if k in allowed})
     # Editing a stat locks it so a future TBA sync won't overwrite what you
     # specified — unless the caller set stats_locked explicitly (e.g. to unlock).
@@ -1344,24 +1344,32 @@ def _use_official_ranks(teams_data, matches_data):
         return False
     return any(t.get("rank") for t in teams_data.values())
 
+def _active_teams(teams_data):
+    """Teams not disabled/excluded from the event (disabled teams are dropped
+    from rankings and the feeds)."""
+    return {tk: t for tk, t in teams_data.items() if not t.get("disabled")}
+
 def event_ranked_teams(teams_data, matches_data=None):
-    """Teams as (team_key, team) in ranking order. Uses TBA's official rank
-    (refreshed on each score sync) unless manual results have been entered —
-    then it falls back to local W-L-T (most wins → fewest losses → most ties)."""
+    """Teams as (team_key, team) in ranking order, excluding disabled teams. Uses
+    TBA's official rank (refreshed on each score sync) unless manual results have
+    been entered — then it falls back to local W-L-T (wins → fewest losses → ties)."""
     if matches_data is None:
         matches_data = load_matches()
-    if _use_official_ranks(teams_data, matches_data):
+    active = _active_teams(teams_data)
+    if _use_official_ranks(active, matches_data):
         # Official order; teams without a rank sort to the bottom.
-        return sorted(teams_data.items(), key=lambda item: item[1].get("rank") or 9999)
-    return sorted(teams_data.items(), key=_wlt_sort_key, reverse=True)
+        return sorted(active.items(), key=lambda item: item[1].get("rank") or 9999)
+    return sorted(active.items(), key=_wlt_sort_key, reverse=True)
 
 def event_rank_map(teams_data, matches_data=None):
     """Map team_key -> displayed rank: the official TBA rank in TBA mode, else
-    the 1-based position from the local W-L-T ordering."""
+    the 1-based position from the local W-L-T ordering. Disabled teams are omitted
+    (they resolve to rank 0 for callers)."""
     if matches_data is None:
         matches_data = load_matches()
-    if _use_official_ranks(teams_data, matches_data):
-        return {tk: (t.get("rank") or 0) for tk, t in teams_data.items()}
+    active = _active_teams(teams_data)
+    if _use_official_ranks(active, matches_data):
+        return {tk: (t.get("rank") or 0) for tk, t in active.items()}
     return {tk: pos for pos, (tk, _) in enumerate(event_ranked_teams(teams_data, matches_data), 1)}
 
 # Separator between entries in the one-line rankings ticker strings
