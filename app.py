@@ -258,6 +258,7 @@ def sync_event_data(event_key):
 
     matches_data["event_key"] = event_key
     matches_data["event_matches"] = {m["key"]: m for m in matches}
+    normalize_unplayed(matches_data["event_matches"])
     
     team_stats = {}
     for team in teams:
@@ -440,6 +441,14 @@ def sync_teams_from_roster(team_numbers, year):
     return True, f"Built data for {total} teams."
 
 # --- MATCH ORDERING ---
+
+def normalize_unplayed(event_matches):
+    """TBA reports winning_alliance="" for BOTH real ties AND matches that haven't
+    been played yet. Force not-yet-played matches (no actual_time) to None so the
+    rest of the app can tell 'no result' apart from an actual tie."""
+    for m in event_matches.values():
+        if not m.get("actual_time") and m.get("winning_alliance") == "":
+            m["winning_alliance"] = None
 
 def sorted_match_keys(event_matches):
     """Return match keys in play order: quals → semis → finals, then by set/match number."""
@@ -1124,6 +1133,9 @@ def refresh_scores():
             m["alliances"]["red"]["score"]  = tm["alliances"]["red"].get("score", -1)
             m["alliances"]["blue"]["score"] = tm["alliances"]["blue"].get("score", -1)
             updated += 1
+
+        # Heal any already-stored matches where TBA's "" (unplayed) leaked in.
+        normalize_unplayed(event_matches)
 
         # Recalculate event W/L/T from all matches with a result.
         event_records = {}
