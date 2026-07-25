@@ -1178,11 +1178,18 @@ def refresh_scores():
             if tk in teams_data and not teams_data[tk].get("stats_locked"):
                 teams_data[tk]["wlt"] = f"{rec[0]}-{rec[1]}-{rec[2]}"
 
-        # Refresh official TBA rankings too (used unless manual results entered).
-        for rank_info in (rankings_data or {}).get("rankings", []):
+        # Refresh official TBA rankings too.
+        official = (rankings_data or {}).get("rankings") or []
+        for rank_info in official:
             tk = rank_info.get("team_key")
             if tk in teams_data and not teams_data[tk].get("stats_locked"):
                 teams_data[tk]["rank"] = rank_info.get("rank", 0)
+
+        # "Manual is temporary": once TBA has official rankings posted, resume
+        # official ranking automatically (a manual result only holds until the
+        # next poll pulls fresh standings from TBA).
+        if official:
+            matches_data["rankings_manual"] = False
 
         matches_data["last_score_sync"] = datetime.now().strftime("%b %d %I:%M:%S %p")
         save_matches(matches_data)
