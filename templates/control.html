@@ -202,6 +202,24 @@
         #toggleLogsBtn.active { border-color: var(--border-focus); color: var(--text-accent); }
         .btn-icon { font-size: 13px; line-height: 1; }
 
+        /* TBA-lag badge in the top bar (green/amber/red by how stale results are) */
+        .tba-lag-badge {
+            display: flex; align-items: center; gap: 6px;
+            font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+            padding: 5px 10px; border-radius: 4px; white-space: nowrap;
+            border: 1px solid var(--border-mid); color: var(--text-secondary);
+            background: var(--bg-btn);
+        }
+        .tba-lag-dot { width: 7px; height: 7px; border-radius: 50%; background: #22cc44; flex-shrink: 0; }
+        .tba-lag-badge.none  { color: var(--text-muted); }
+        .tba-lag-badge.none  .tba-lag-dot { background: var(--text-muted); }
+        .tba-lag-badge.warn  { border-color: #7a5a1a; color: #e0a800; background: rgba(224,168,0,0.10); }
+        .tba-lag-badge.warn  .tba-lag-dot { background: #e0a800; }
+        .tba-lag-badge.high  { border-color: #6a1f1f; color: #ee5555; background: rgba(180,40,40,0.15); }
+        .tba-lag-badge.high  .tba-lag-dot { background: #ee5555; animation: lagBlink 1.1s ease-in-out infinite; }
+        @keyframes lagBlink { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+        @media (max-width: 480px) { .tba-lag-label { display: none; } }
+
         /* ══════════════════════════════════════
            LEFT DRAWER
         ══════════════════════════════════════ */
@@ -1068,6 +1086,7 @@
                 <span class="drawer-item-icon">⬇</span> Sync Scores
             </button>
             <div class="drawer-sync-info">Scores: <span id="lastScoreSync">—</span></div>
+            <div class="drawer-sync-info" title="Time from TBA posting a result to the app picking it up">TBA lag: <span id="tbaLag">—</span></div>
 
             <div class="drawer-divider"></div>
             <div class="drawer-section-label">Configuration</div>
@@ -1112,6 +1131,10 @@
             <h1>FRC Graphics Control</h1>
         </div>
         <div class="top-bar-right">
+            <div id="tbaLagTop" class="tba-lag-badge none" title="Lag between TBA posting a match result and the app picking it up">
+                <span class="tba-lag-dot"></span>
+                <span class="tba-lag-label">TBA lag</span> <span id="tbaLagTopVal">—</span>
+            </div>
             <button id="toggleLogsBtn" type="button">
                 <span class="btn-icon">◧</span>
                 <span id="logBtnText">Show Logs</span>
@@ -1437,6 +1460,31 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
                 .then(d => {
                     document.getElementById('lastFullSync').textContent  = d.last_full_sync  || 'Never';
                     document.getElementById('lastScoreSync').textContent = d.last_score_sync || 'Never';
+                    const lagEl = document.getElementById('tbaLag');
+                    if (lagEl) {
+                        lagEl.textContent = d.tba_lag_last == null ? '—'
+                            : `${d.tba_lag_last}s (avg ${d.tba_lag_avg}s, n=${d.tba_lag_count})`;
+                    }
+                    // Top-bar badge: colour by how stale the latest result was.
+                    const badge = document.getElementById('tbaLagTop');
+                    const badgeVal = document.getElementById('tbaLagTopVal');
+                    if (badge && badgeVal) {
+                        const last = d.tba_lag_last;
+                        const pi = d.poll_interval || 60;
+                        let tier = 'none';
+                        if (last == null) {
+                            badgeVal.textContent = '—';
+                        } else {
+                            badgeVal.textContent = `${last}s`;
+                            if (last > 2 * pi)        tier = 'high';
+                            else if (last > 1.25 * pi) tier = 'warn';
+                            else                       tier = 'ok';
+                        }
+                        badge.className = 'tba-lag-badge ' + tier;
+                        badge.title = last == null
+                            ? 'No finished matches picked up yet'
+                            : `Last ${last}s · avg ${d.tba_lag_avg}s over ${d.tba_lag_count} — poll every ${pi}s`;
+                    }
                 })
                 .catch(() => {});
         }

@@ -256,6 +256,9 @@ def sync_event_data(event_key):
         oprs_data = fetch_from_tba(f"event/{event_key}/oprs")
         event_oprs = (oprs_data or {}).get("oprs") or {}
 
+    # Reset the TBA-lag stats when switching to a different event.
+    if matches_data.get("event_key") != event_key:
+        matches_data["tba_lag"] = {"last": None, "count": 0, "sum": 0}
     matches_data["event_key"] = event_key
     matches_data["event_matches"] = {m["key"]: m for m in matches}
     normalize_unplayed(matches_data["event_matches"])
@@ -592,10 +595,18 @@ def matches_page():
 @app.route("/api/sync_times")
 def api_sync_times():
     matches_data = load_matches()
+    lag = matches_data.get("tba_lag") or {}
+    count = lag.get("count", 0)
     return jsonify({
         "last_full_sync":  matches_data.get("last_full_sync",  "Never"),
         "last_score_sync": matches_data.get("last_score_sync", "Never"),
         "event_key":       matches_data.get("event_key", ""),
+        # TBA→app lag (seconds): time from TBA posting a result to the app picking
+        # it up. 'last' is the most recent finished match; 'avg' is the mean.
+        "tba_lag_last":    lag.get("last"),
+        "tba_lag_avg":     round(lag["sum"] / count) if count else None,
+        "tba_lag_count":   count,
+        "poll_interval":   SCORE_POLL_SECONDS,
     })
 
 @app.route("/api/matches")
@@ -1225,6 +1236,8 @@ def refresh_scores():
         event_matches = matches_data.get("event_matches", {})
 
         updated = 0
+        now = int(time.time())
+        new_lags = []   # lag (s) for matches whose result we detect this poll
         for tm in tba_matches:
             key = tm.get("key")
             if key not in event_matches:
@@ -1232,11 +1245,28 @@ def refresh_scores():
             if not tm.get("actual_time"):
                 continue
             m = event_matches[key]
+            # Newly-detected result: had no winner stored before this update.
+            newly_resulted = m.get("winning_alliance") is None
             m["actual_time"]      = tm["actual_time"]
             m["winning_alliance"] = tm.get("winning_alliance")
             m["alliances"]["red"]["score"]  = tm["alliances"]["red"].get("score", -1)
             m["alliances"]["blue"]["score"] = tm["alliances"]["blue"].get("score", -1)
             updated += 1
+            if newly_resulted:
+                # How long after TBA posted the result did we pick it up?
+                posted = tm.get("post_result_time") or tm.get("actual_time")
+                if posted:
+                    new_lags.append(max(0, now - int(posted)))
+
+        # Track TBA→app lag: latest detected result + running average.
+        if new_lags:
+            lag = matches_data.setdefault("tba_lag", {"last": None, "count": 0, "sum": 0})
+            for L in new_lags:
+                lag["last"] = L
+                lag["count"] += 1
+                lag["sum"]  += L
+            add_log(f"TBA lag: {new_lags[-1]}s for the just-finished match "
+                    f"(avg {round(lag['sum']/lag['count'])}s over {lag['count']}).")
 
         # Heal any already-stored matches where TBA's "" (unplayed) leaked in.
         normalize_unplayed(event_matches)
