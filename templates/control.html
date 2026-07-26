@@ -1658,7 +1658,11 @@ F1-1,1234,5678,9012,3456,7890,1122</code>
                     const label = winner === '' ? 'Tie' : winner === 'red' ? '🔴 Red wins' : '🔵 Blue wins';
                     statusDiv.className = 'status success';
                     statusDiv.style.display = 'block';
-                    statusDiv.textContent = `✓ ${label} recorded. Advancing…`;
+                    // Only say "Advancing…" if there's actually a next match to go to
+                    // (not the last match, and not a replay of a past match).
+                    statusDiv.textContent = data.next_match
+                        ? `✓ ${label} recorded. Advancing…`
+                        : `✓ ${label} recorded.`;
                     document.getElementById('redScoreInput').value = '';
                     document.getElementById('blueScoreInput').value = '';
                     if (data.next_match) {

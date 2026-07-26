@@ -1237,7 +1237,7 @@ def refresh_scores():
 
         updated = 0
         now = int(time.time())
-        new_lags = []   # lag (s) for matches whose result we detect this poll
+        new_lags = []   # lag (s) recorded this poll (manual entries + TBA-first)
         for tm in tba_matches:
             key = tm.get("key")
             if key not in event_matches:
@@ -1245,18 +1245,27 @@ def refresh_scores():
             if not tm.get("actual_time"):
                 continue
             m = event_matches[key]
-            # Newly-detected result: had no winner stored before this update.
-            newly_resulted = m.get("winning_alliance") is None
+            had_result   = m.get("winning_alliance") is not None  # before this update
+            entered_at   = m.get("result_entered_at")             # set on manual entry
+            already_logged = m.get("lag_recorded")
             m["actual_time"]      = tm["actual_time"]
             m["winning_alliance"] = tm.get("winning_alliance")
             m["alliances"]["red"]["score"]  = tm["alliances"]["red"].get("score", -1)
             m["alliances"]["blue"]["score"] = tm["alliances"]["blue"].get("score", -1)
             updated += 1
-            if newly_resulted:
-                # How long after TBA posted the result did we pick it up?
-                posted = tm.get("post_result_time") or tm.get("actual_time")
-                if posted:
+            # Measure lag once per match, against TBA's post_result_time.
+            posted = tm.get("post_result_time") or tm.get("actual_time")
+            if posted and not already_logged:
+                if entered_at is not None:
+                    # Hand-entered: entry time vs TBA post (negative = you beat TBA).
+                    new_lags.append(int(entered_at) - int(posted))
+                    m["lag_recorded"] = True
+                elif not had_result:
+                    # First learned from TBA on this poll.
                     new_lags.append(max(0, now - int(posted)))
+                    m["lag_recorded"] = True
+                # else: already had a result (e.g. from a full sync) with no manual
+                # entry — skip so old matches don't pollute the metric.
 
         # Track TBA→app lag: latest detected result + running average.
         if new_lags:
@@ -1346,6 +1355,11 @@ def api_set_match_result():
         m["alliances"]["red"]["score"]  = int(red_score)
     if blue_score is not None:
         m["alliances"]["blue"]["score"] = int(blue_score)
+    # Stamp when the result was hand-entered so the lag (entry vs TBA's later
+    # post_result_time) can be measured on the next poll. Reset lag_recorded so a
+    # replay/correction gets re-measured.
+    m["result_entered_at"] = int(time.time())
+    m["lag_recorded"] = False
 
     # Recalculate event W/L/T from all matches that have a result
     event_records = {}
