@@ -330,6 +330,16 @@
         .btn-row-cancel { background: transparent; border: 1px solid var(--border-mid); color: var(--text-muted); }
         .btn-row-cancel:hover { color: var(--text-primary); }
 
+        /* ── RESPONSIVE ── */
+        @media (max-width: 700px) {
+            .top-bar { flex-wrap: wrap; height: auto; min-height: 52px; padding: 8px 12px; gap: 8px; }
+            .top-bar-right { flex-wrap: wrap; gap: 8px; row-gap: 6px; }
+            .main { padding: 12px; }
+            .toolbar { flex-wrap: wrap; gap: 8px; }
+            .filter-btns { flex-wrap: wrap; }
+            .search-input { width: 100%; }
+            .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        }
     </style>
 </head>
 <body>

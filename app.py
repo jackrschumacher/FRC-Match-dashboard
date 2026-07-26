@@ -1343,16 +1343,23 @@ def api_set_match_result():
     # (by W-L-T) until the next full "Sync Event Data" re-establishes TBA order.
     matches_data["rankings_manual"] = True
 
-    # Advance to next match
-    next_key = find_next_match(matches_data, match_key)
-    if next_key:
-        matches_data["current_match"] = next_key
+    # Advance to the next match ONLY when we scored the current match. Scoring a
+    # different match (a replay or a correction) records the result for THAT match
+    # and leaves the active match exactly where it is.
+    next_key = None
+    if match_key == matches_data.get("current_match"):
+        next_key = find_next_match(matches_data, match_key)
+        if next_key:
+            matches_data["current_match"] = next_key
 
     save_matches(matches_data)
     save_teams(teams_data)
 
     label = "Tie" if winner == "" else f"{winner.capitalize()} wins"
-    add_log(f"Result: {match_key} → {label}. Active match → {next_key or 'none'}")
+    if next_key:
+        add_log(f"Result: {match_key} → {label}. Active match → {next_key}")
+    else:
+        add_log(f"Result: {match_key} → {label}. Active match unchanged.")
     return jsonify({"status": "success", "next_match": next_key})
 
 @app.route("/api/edit/match_title", methods=["POST"])
